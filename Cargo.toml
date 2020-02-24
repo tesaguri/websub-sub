@@ -1,0 +1,12 @@
+[package]
+name = "websub-sub"
+version = "0.1.0"
+authors = ["Daiki Mizukami <tesaguriguma@gmail.com>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+structopt = "0.3.0"
+futures = "0.3.0"
+hyper = { version = "0.13.0", features = ["stream"] }
+tokio = { version = "0.2.0", features = ["macros"] }
