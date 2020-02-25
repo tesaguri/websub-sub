@@ -1,4 +1,9 @@
+#[macro_use]
+extern crate diesel;
+
 mod cmd;
+mod common;
+mod schema;
 mod sub;
 
 use structopt::StructOpt;

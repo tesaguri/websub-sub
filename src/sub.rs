@@ -12,6 +12,8 @@ pub enum Sub<'a> {
         callback: &'a str,
         #[serde(rename = "hub.topic")]
         topic: &'a str,
+        #[serde(rename = "hub.secret")]
+        secret: &'a str,
     },
     #[serde(rename = "unsubscribe")]
     Unsubscribe {
