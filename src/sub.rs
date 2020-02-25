@@ -1,6 +1,7 @@
 use std::str;
 
 use futures::{future, TryStreamExt};
+use hyper::header::CONTENT_TYPE;
 use hyper_tls::HttpsConnector;
 
 #[derive(serde::Serialize)]
@@ -30,6 +31,7 @@ pub async fn send(hub: &str, sub: &Sub<'_>) {
 
     let body = serde_urlencoded::to_string(sub).unwrap();
     let req = hyper::Request::post(hub)
+        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(hyper::Body::from(body))
         .unwrap();
 
