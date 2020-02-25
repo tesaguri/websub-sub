@@ -2,12 +2,18 @@ use std::convert::TryInto;
 use std::io::{stdout, Write};
 use std::net::SocketAddr;
 
+use auto_enums::auto_enum;
 use diesel::dsl::*;
 use diesel::prelude::*;
-use futures::{future, TryFutureExt, TryStreamExt};
+use diesel::r2d2::{ConnectionManager, Pool};
+use futures::{future, Future, TryFutureExt, TryStreamExt};
+use hmac::digest::generic_array::typenum::Unsigned;
+use hmac::digest::FixedOutput;
+use hmac::{Hmac, Mac};
 use hyper::server::Server;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Error, Request, Response};
+use sha1::Sha1;
 use structopt::StructOpt;
 
 use crate::schema::subscriptions;
@@ -40,10 +46,18 @@ enum Verify {
 }
 
 #[derive(serde::Deserialize)]
+enum Signature<'a> {
+    #[serde(rename = "sha1")]
+    Sha1(&'a str),
+}
+
+#[derive(serde::Deserialize)]
 struct Maybe<T> {
     #[serde(flatten)]
     value: Option<T>,
 }
+
+const X_HUB_SIGNATURE: &str = "x-hub-signature";
 
 pub async fn main(opt: Opt) {
     let pool = crate::common::database_pool();
@@ -53,82 +67,106 @@ pub async fn main(opt: Opt) {
         future::ok::<_, Error>(service_fn(move |req: Request<Body>| {
             eprintln!("* {}", req.uri());
 
-            // Use an immediately invoked closure to prevent the `async` block from capturing `pool`
-            let catch = (|| {
-                const PREFIX: &str = "/websub/callback/";
-                let path = req.uri().path();
-                let id = if path.starts_with(PREFIX) {
-                    let id: u64 = path[PREFIX.len()..].parse().unwrap();
-                    let id: i64 = id.try_into().unwrap();
-                    id
-                } else {
-                    return Some(
-                        Response::builder()
-                            .status(hyper::StatusCode::NOT_FOUND)
-                            .body(Body::empty())
-                            .unwrap(),
-                    );
-                };
-                if let Some(q) = req.uri().query() {
-                    if let Some(hub) = serde_urlencoded::from_str::<Maybe<Verify>>(q)
-                        .unwrap()
-                        .value
-                    {
-                        let conn = pool.get().unwrap();
-                        let challenge = match hub {
-                            Verify::Subscribe {
-                                topic, challenge, ..
-                            } => {
-                                if subscription_exists(&conn, id, &topic) {
-                                    Some(challenge)
-                                } else {
-                                    None
-                                }
-                            }
-                            Verify::Unsubscribe { topic, challenge } => {
-                                if !subscription_exists(&conn, id, &topic) {
-                                    Some(challenge)
-                                } else {
-                                    None
-                                }
-                            }
-                        };
-                        if let Some(challenge) = challenge {
-                            return Some(Response::new(Body::from(challenge)));
-                        } else {
-                            return Some(
-                                Response::builder()
-                                    .status(hyper::StatusCode::NOT_FOUND)
-                                    .body(Body::empty())
-                                    .unwrap(),
-                            );
-                        }
-                    }
-                }
-
-                None
-            })();
-
-            // TODO: verify the signature
-
-            async {
-                if let Some(response) = catch {
-                    Ok(response)
-                } else {
-                    let mut stdout = stdout();
-                    req.into_body()
-                        .try_for_each(move |chunk| {
-                            stdout.write_all(&chunk).unwrap();
-                            future::ok(())
-                        })
-                        .map_ok(|()| Response::new(Body::empty()))
-                        .await
-                }
-            }
+            serve(req, &pool)
         }))
     });
 
     Server::bind(&opt.addr).serve(make_svc).await.unwrap();
+}
+
+#[auto_enum(Future)]
+fn serve(
+    mut req: Request<Body>,
+    pool: &Pool<ConnectionManager<SqliteConnection>>,
+) -> impl Future<Output = Result<Response<Body>, Error>> {
+    const PREFIX: &str = "/websub/callback/";
+    let path = req.uri().path();
+    let id = if path.starts_with(PREFIX) {
+        let id: u64 = path[PREFIX.len()..].parse().unwrap();
+        let id: i64 = id.try_into().unwrap();
+        id
+    } else {
+        return future::ok(
+            Response::builder()
+                .status(hyper::StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap(),
+        );
+    };
+
+    let conn = pool.get().unwrap();
+
+    if let Some(q) = req.uri().query() {
+        if let Some(hub) = serde_urlencoded::from_str::<Maybe<Verify>>(q)
+            .unwrap()
+            .value
+        {
+            let challenge = match hub {
+                Verify::Subscribe {
+                    topic, challenge, ..
+                } => {
+                    if subscription_exists(&conn, id, &topic) {
+                        Some(challenge)
+                    } else {
+                        None
+                    }
+                }
+                Verify::Unsubscribe { topic, challenge } => {
+                    if !subscription_exists(&conn, id, &topic) {
+                        Some(challenge)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(challenge) = challenge {
+                return future::ok(Response::new(Body::from(challenge)));
+            } else {
+                return future::ok(
+                    Response::builder()
+                        .status(hyper::StatusCode::NOT_FOUND)
+                        .body(Body::empty())
+                        .unwrap(),
+                );
+            }
+        }
+    }
+
+    let secret = subscriptions::table
+        .select(subscriptions::secret)
+        .find(id)
+        .get_result::<String>(&conn)
+        .unwrap();
+    let signature = if let Some(v) = req.headers_mut().remove(X_HUB_SIGNATURE) {
+        match serde_urlencoded::from_bytes(v.as_bytes()).unwrap() {
+            Signature::Sha1(s) => {
+                const LEN: usize = <<Sha1 as FixedOutput>::OutputSize as Unsigned>::USIZE;
+                let mut buf = [0u8; LEN];
+                hex::decode_to_slice(&s, &mut buf).unwrap();
+                buf
+            }
+        }
+    } else {
+        eprintln!("* missing signature");
+        return future::ok(Response::new(Body::empty()));
+    };
+    let mac = Hmac::<Sha1>::new_varkey(secret.as_bytes()).unwrap();
+
+    let mut stdout = stdout();
+    return req
+        .into_body()
+        .try_fold(mac, move |mut mac, chunk| {
+            mac.input(&chunk);
+            stdout.write_all(&chunk).unwrap();
+            future::ok(mac)
+        })
+        .map_ok(move |mac| {
+            let code = mac.result().code();
+            if *code != signature {
+                eprintln!("* signature mismatch");
+            }
+            Response::new(Body::empty())
+        });
 }
 
 fn subscription_exists(conn: &SqliteConnection, id: i64, topic: &str) -> bool {
