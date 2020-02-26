@@ -46,12 +46,6 @@ enum Verify {
 }
 
 #[derive(serde::Deserialize)]
-enum Signature<'a> {
-    #[serde(rename = "sha1")]
-    Sha1(&'a str),
-}
-
-#[derive(serde::Deserialize)]
 struct Maybe<T> {
     #[serde(flatten)]
     value: Option<T>,
