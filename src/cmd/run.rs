@@ -76,7 +76,7 @@ pub async fn main(opt: Opt) {
 
 #[auto_enum(Future)]
 fn serve(
-    mut req: Request<Body>,
+    req: Request<Body>,
     pool: &Pool<ConnectionManager<SqliteConnection>>,
 ) -> impl Future<Output = Result<Response<Body>, Error>> {
     const PREFIX: &str = "/websub/callback/";
@@ -132,25 +132,56 @@ fn serve(
         }
     }
 
-    let secret = subscriptions::table
-        .select(subscriptions::secret)
-        .find(id)
-        .get_result::<String>(&conn)
-        .unwrap();
-    let signature = if let Some(v) = req.headers_mut().remove(X_HUB_SIGNATURE) {
-        match serde_urlencoded::from_bytes(v.as_bytes()).unwrap() {
-            Signature::Sha1(s) => {
-                const LEN: usize = <<Sha1 as FixedOutput>::OutputSize as Unsigned>::USIZE;
-                let mut buf = [0u8; LEN];
-                hex::decode_to_slice(&s, &mut buf).unwrap();
-                buf
-            }
-        }
+    let mac = {
+        let secret = subscriptions::table
+            .select(subscriptions::secret)
+            .find(id)
+            .get_result::<String>(&conn)
+            .unwrap();
+        Hmac::<Sha1>::new_varkey(secret.as_bytes()).unwrap()
+    };
+
+    let signature_header = if let Some(v) = req.headers().get(X_HUB_SIGNATURE) {
+        v.as_bytes()
     } else {
         eprintln!("* missing signature");
         return future::ok(Response::new(Body::empty()));
     };
-    let mac = Hmac::<Sha1>::new_varkey(secret.as_bytes()).unwrap();
+
+    let pos = signature_header.iter().position(|&b| b == b'=');
+    let (method, signature_hex) = if let Some(i) = pos {
+        let (method, hex) = signature_header.split_at(i);
+        (method, &hex[1..])
+    } else {
+        eprintln!("* malformed signature");
+        return future::ok(
+            Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .body(Body::empty())
+                .unwrap(),
+        );
+    };
+
+    let signature = match method {
+        b"sha1" => {
+            const LEN: usize = <<Sha1 as FixedOutput>::OutputSize as Unsigned>::USIZE;
+            let mut buf = [0u8; LEN];
+            hex::decode_to_slice(signature_hex, &mut buf).unwrap();
+            buf
+        }
+        _ => {
+            eprintln!(
+                "* unknown digest algorithm: {}",
+                String::from_utf8_lossy(method)
+            );
+            return future::ok(
+                Response::builder()
+                    .status(hyper::StatusCode::NOT_ACCEPTABLE)
+                    .body(Body::empty())
+                    .unwrap(),
+            );
+        }
+    };
 
     let mut stdout = stdout();
     return req
