@@ -1,4 +1,4 @@
-use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::str;
 
 use diesel::prelude::*;
@@ -6,7 +6,7 @@ use diesel::result::DatabaseErrorKind;
 use diesel::SqliteConnection;
 use futures::{future, Future, TryStreamExt};
 use http::header::CONTENT_TYPE;
-use http::uri::{Parts, PathAndQuery, Uri};
+use http::uri::{Parts, Uri};
 use rand::RngCore;
 
 use crate::schema::*;
@@ -26,7 +26,8 @@ enum Form<'a> {
     },
     Unsubscribe {
         #[serde(rename = "hub.callback")]
-        callback: &'a str,
+        #[serde(serialize_with = "serialize_uri")]
+        callback: &'a Uri,
         #[serde(rename = "hub.topic")]
         topic: &'a str,
     },
@@ -66,13 +67,8 @@ where
         }
     };
 
-    let mut parts = Parts::from(host.clone());
-    let path = PathAndQuery::try_from(&*format!("/websub/callback/{}", id)).unwrap();
-    parts.path_and_query = Some(path);
-    let callback = Uri::try_from(parts).unwrap();
-
     let body = serde_urlencoded::to_string(Form::Subscribe {
-        callback: &callback,
+        callback: &callback(host.clone(), id),
         topic,
         secret,
     })
@@ -91,9 +87,8 @@ pub fn unsubscribe<C>(
 where
     C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
 {
-    let callback = format!("{}/websub/callback/{}", host, id);
     let body = serde_urlencoded::to_string(Form::Unsubscribe {
-        callback: &callback,
+        callback: &callback(host.clone(), id),
         topic,
     })
     .unwrap();
@@ -101,7 +96,7 @@ where
 }
 
 pub fn unsubscribe_all<'a, C>(
-    host: &Uri,
+    host: &'a Uri,
     hub: &'a str,
     topic: &'a str,
     client: &'a hyper::Client<C>,
@@ -119,12 +114,10 @@ where
     // TODO: transaction
     diesel::delete(rows).execute(conn).unwrap();
 
-    let callback_prefix = format!("{}/websub/callback", host);
     async move {
         for id in ids {
-            let callback = format!("{}/{}", callback_prefix, id);
             let body = serde_urlencoded::to_string(Form::Unsubscribe {
-                callback: &callback,
+                callback: &callback(host.clone(), id),
                 topic,
             })
             .unwrap();
@@ -162,6 +155,12 @@ where
             .unwrap();
         eprintln!("error: {}", body);
     }
+}
+
+fn callback(host: Uri, id: i64) -> Uri {
+    let mut parts = Parts::from(host);
+    parts.path_and_query = Some((*format!("/websub/callback/{}", id)).try_into().unwrap());
+    parts.try_into().unwrap()
 }
 
 const SECRET_LEN: usize = 32;
