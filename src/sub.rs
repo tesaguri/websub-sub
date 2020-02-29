@@ -49,7 +49,7 @@ where
     // TODO: transaction
     let id = loop {
         let id = (rng.next_u64() >> 1) as i64;
-        let result = diesel::replace_into(subscriptions::table)
+        let result = diesel::insert_into(subscriptions::table)
             .values((
                 subscriptions::id.eq(id),
                 subscriptions::hub.eq(hub),

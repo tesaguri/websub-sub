@@ -224,7 +224,7 @@ where
                         tokio::spawn(sub::unsubscribe(host, sub, &hub, &topic, client));
                     }
 
-                    replace_into(active_subscriptions::table)
+                    insert_into(active_subscriptions::table)
                         .values((
                             active_subscriptions::id.eq(id),
                             active_subscriptions::expires_at.eq(expires_at_epoch),
