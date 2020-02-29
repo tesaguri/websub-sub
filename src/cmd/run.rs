@@ -1,7 +1,7 @@
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::io::{stdout, Write};
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::SystemTime;
 
 use auto_enums::auto_enum;
@@ -26,6 +26,8 @@ use crate::sub;
 #[derive(StructOpt)]
 pub struct Opt {
     host: Uri,
+    #[structopt(parse(try_from_str))]
+    bind: Option<SocketAddr>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -133,21 +135,25 @@ pub async fn main(opt: Opt) {
         }))
     });
 
-    let port = if let Some(p) = opt.host.port_u16() {
-        p
+    let addr = if let Some(addr) = opt.bind {
+        addr
     } else {
-        match opt.host.scheme() {
-            Some(s) if s == "https" => 443,
-            Some(s) if s == "http" => 80,
-            Some(s) => panic!("default port for scheme `{}` is unknown", s),
-            None => panic!("missing URI scheme for host argument"),
-        }
+        let port = if let Some(p) = opt.host.port_u16() {
+            p
+        } else {
+            match opt.host.scheme() {
+                Some(s) if s == "https" => 443,
+                Some(s) if s == "http" => 80,
+                Some(s) => panic!("default port for scheme `{}` is unknown", s),
+                None => panic!("missing URI scheme for host argument"),
+            }
+        };
+        (opt.host.host().unwrap(), port)
+            .to_socket_addrs()
+            .unwrap()
+            .next()
+            .unwrap()
     };
-    let addr = (opt.host.host().unwrap(), port)
-        .to_socket_addrs()
-        .unwrap()
-        .next()
-        .unwrap();
 
     let server = Server::bind(&addr).serve(make_svc);
 
