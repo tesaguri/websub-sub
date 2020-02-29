@@ -183,17 +183,28 @@ where
 
     let conn = pool.get().unwrap();
 
+    // Verification of intent (§5.3)
     if let Some(q) = req.uri().query() {
         if let Some(hub) = serde_urlencoded::from_str::<Maybe<Verify>>(q)
             .unwrap()
             .value
         {
+            let row = |topic| {
+                subscriptions::table
+                    .filter(subscriptions::id.eq(id))
+                    .filter(subscriptions::topic.eq(topic))
+            };
+            let sub_is_active = subscriptions::id
+                .eq_any(active_subscriptions::table.select(active_subscriptions::id));
             let challenge = match hub {
                 Verify::Subscribe {
                     topic,
                     challenge,
                     lease_seconds,
-                } if subscription_exists(&conn, id, &topic) => {
+                } if select(exists(row(&topic).filter(not(sub_is_active))))
+                    .get_result(&conn)
+                    .unwrap() =>
+                {
                     let now_i = tokio::time::Instant::now();
                     let now_epoch = now_epoch();
 
@@ -235,7 +246,7 @@ where
                     Some(challenge)
                 }
                 Verify::Unsubscribe { topic, challenge }
-                    if !subscription_exists(&conn, id, &topic) =>
+                    if select(not(exists(row(&topic)))).get_result(&conn).unwrap() =>
                 {
                     Some(challenge)
                 }
@@ -320,18 +331,6 @@ where
             }
             Response::new(Body::empty())
         });
-}
-
-fn subscription_exists(conn: &SqliteConnection, id: i64, topic: &str) -> bool {
-    select(exists(
-        subscriptions::table.filter(
-            subscriptions::id
-                .eq(id)
-                .and(subscriptions::topic.eq(&topic)),
-        ),
-    ))
-    .get_result(conn)
-    .unwrap()
 }
 
 fn deserialize_str_as_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
