@@ -1,40 +1,18 @@
-use std::fmt::Write;
-
-use diesel::prelude::*;
+use http::Uri;
 use structopt::StructOpt;
 
-use crate::schema::subscriptions;
-use crate::sub::{self, Sub};
+use crate::sub;
 
 #[derive(StructOpt)]
 pub struct Opt {
-    host: String,
+    host: Uri,
     hub: String,
     topic: String,
 }
 
-pub async fn main(mut opt: Opt) {
+pub async fn main(opt: Opt) {
+    let client = crate::common::http_client();
     let conn = crate::common::open_database();
-    let id: i64 = subscriptions::table
-        .select(subscriptions::id)
-        .filter(
-            subscriptions::hub
-                .eq(&opt.hub)
-                .and(subscriptions::topic.eq(&opt.topic)),
-        )
-        .get_result(&conn)
-        .unwrap();
-    write!(opt.host, "/websub/callback/{}", id).unwrap();
-    // TODO: transaction
-    diesel::delete(subscriptions::table.find(id))
-        .execute(&conn)
-        .unwrap();
-    sub::send(
-        &opt.hub,
-        &Sub::Unsubscribe {
-            callback: &opt.host,
-            topic: &opt.topic,
-        },
-    )
-    .await;
+
+    sub::unsubscribe_all(&opt.host, &opt.hub, &opt.topic, &client, &conn).await;
 }
