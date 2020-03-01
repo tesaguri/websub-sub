@@ -4,11 +4,10 @@ use std::io::{stdout, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::SystemTime;
 
-use auto_enums::auto_enum;
 use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use futures::future::{self, Future, TryFutureExt};
+use futures::future::{self, TryFutureExt};
 use futures::{StreamExt, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
@@ -149,15 +148,13 @@ pub async fn main(opt: Opt) {
         let mut tx = tx.clone();
         let client = client.clone();
         let pool = pool.clone();
-        let conn = http.serve_connection(
-            sock,
-            service_fn(move |req: Request<Body>| {
-                eprintln!("* {}", req.uri());
 
-                serve(req, &host, &mut tx, &client, &pool)
-            }),
-        );
-        tokio::spawn(conn);
+        let service = service_fn(move |req| {
+            eprintln!("* {}", req.uri());
+            future::ok::<_, Error>(serve(req, &host, &mut tx, &client, &pool))
+        });
+        tokio::spawn(http.serve_connection(sock, service));
+
         future::ok(http)
     });
 
@@ -165,14 +162,13 @@ pub async fn main(opt: Opt) {
     result.unwrap();
 }
 
-#[auto_enum(Future)]
 fn serve<C>(
     req: Request<Body>,
     host: &Uri,
     tx: &mut futures::channel::mpsc::UnboundedSender<tokio::time::Instant>,
     client: &hyper::Client<C>,
     pool: &Pool<ConnectionManager<SqliteConnection>>,
-) -> impl Future<Output = Result<Response<Body>, Error>>
+) -> Response<Body>
 where
     C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
 {
@@ -183,12 +179,10 @@ where
         let id: i64 = id.try_into().unwrap();
         id
     } else {
-        return future::ok(
-            Response::builder()
-                .status(http::StatusCode::NOT_FOUND)
-                .body(Body::empty())
-                .unwrap(),
-        );
+        return Response::builder()
+            .status(http::StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
     };
 
     let conn = pool.get().unwrap();
@@ -263,14 +257,12 @@ where
                 _ => None,
             };
             if let Some(challenge) = challenge {
-                return future::ok(Response::new(Body::from(challenge)));
+                return Response::new(Body::from(challenge));
             } else {
-                return future::ok(
-                    Response::builder()
-                        .status(http::StatusCode::NOT_FOUND)
-                        .body(Body::empty())
-                        .unwrap(),
-                );
+                return Response::builder()
+                    .status(http::StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap();
             }
         }
     }
@@ -288,7 +280,7 @@ where
         v.as_bytes()
     } else {
         eprintln!("* missing signature");
-        return future::ok(Response::new(Body::empty()));
+        return Response::new(Body::empty());
     };
 
     let pos = signature_header.iter().position(|&b| b == b'=');
@@ -297,12 +289,10 @@ where
         (method, &hex[1..])
     } else {
         eprintln!("* malformed signature");
-        return future::ok(
-            Response::builder()
-                .status(http::StatusCode::BAD_REQUEST)
-                .body(Body::empty())
-                .unwrap(),
-        );
+        return Response::builder()
+            .status(http::StatusCode::BAD_REQUEST)
+            .body(Body::empty())
+            .unwrap();
     };
 
     let signature = match method {
@@ -317,17 +307,15 @@ where
                 "* unknown digest algorithm: {}",
                 String::from_utf8_lossy(method)
             );
-            return future::ok(
-                Response::builder()
-                    .status(http::StatusCode::NOT_ACCEPTABLE)
-                    .body(Body::empty())
-                    .unwrap(),
-            );
+            return Response::builder()
+                .status(http::StatusCode::NOT_ACCEPTABLE)
+                .body(Body::empty())
+                .unwrap();
         }
     };
 
     let mut stdout = stdout();
-    return req
+    let print = req
         .into_body()
         .try_fold(mac, move |mut mac, chunk| {
             mac.input(&chunk);
@@ -339,8 +327,10 @@ where
             if *code != signature {
                 eprintln!("* signature mismatch");
             }
-            Response::new(Body::empty())
         });
+    tokio::spawn(print);
+
+    return Response::new(Body::empty());
 }
 
 fn deserialize_str_as_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
