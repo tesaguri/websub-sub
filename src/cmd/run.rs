@@ -7,8 +7,7 @@ use std::time::SystemTime;
 use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use futures::future::{self, TryFutureExt};
-use futures::{StreamExt, TryStreamExt};
+use futures::{future, stream, StreamExt, TryFutureExt, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac};
@@ -66,69 +65,9 @@ pub async fn main(opt: Opt) {
     let client = crate::common::http_client();
     let pool = crate::common::database_pool();
 
-    let (tx, mut rx) = futures::channel::mpsc::unbounded();
-
-    let subscription_renewer = async {
-        let expiry = active_subscriptions::table
-            .select(active_subscriptions::expires_at)
-            .order(active_subscriptions::expires_at.asc());
-        let mut timer = if let Some(expires_at) = expiry
-            .first::<i64>(&pool.get().unwrap())
-            .optional()
-            .unwrap()
-        {
-            let refresh_time = refresh_time(instant_from_epoch(expires_at));
-            future::Either::Left(tokio::time::delay_until(refresh_time))
-        } else {
-            future::Either::Right(future::pending())
-        };
-
-        loop {
-            match future::select(rx.next(), &mut timer).await {
-                future::Either::Left((Some(expires_at), _)) => {
-                    let refresh_time = refresh_time(expires_at);
-                    match timer {
-                        future::Either::Left(ref mut timer) => {
-                            if refresh_time < timer.deadline() {
-                                timer.reset(refresh_time);
-                            }
-                        }
-                        future::Either::Right(_) => {
-                            timer = future::Either::Left(tokio::time::delay_until(refresh_time));
-                        }
-                    }
-                }
-                future::Either::Left((None, _)) => return,
-                future::Either::Right(((), _)) => {
-                    let now_epoch = now_epoch();
-                    let threshold: i64 = (now_epoch + RENEW).try_into().unwrap();
-
-                    let conn = pool.get().unwrap();
-                    let expiring_subscriptions = active_subscriptions::table
-                        .inner_join(subscriptions::table)
-                        .select((subscriptions::hub, subscriptions::topic))
-                        .filter(active_subscriptions::expires_at.le(threshold))
-                        .load::<(String, String)>(&pool.get().unwrap())
-                        .unwrap();
-                    for (hub, topic) in expiring_subscriptions {
-                        tokio::spawn(sub::subscribe(&opt.host, &hub, &topic, &client, &conn));
-                    }
-
-                    if let Some(expires_at) = expiry
-                        .first::<i64>(&pool.get().unwrap())
-                        .optional()
-                        .unwrap()
-                    {
-                        let refresh_time = refresh_time(instant_from_epoch(expires_at));
-                        match timer {
-                            future::Either::Left(ref mut timer) => timer.reset(refresh_time),
-                            future::Either::Right(_pending) => unreachable!(),
-                        }
-                    }
-                }
-            }
-        }
-    };
+    let (tx, rx) = futures::channel::mpsc::unbounded();
+    let subscription_renewer =
+        subscription_renewer(opt.host.clone(), rx, client.clone(), pool.clone());
 
     let addr = if let Some(addr) = opt.bind {
         addr
@@ -151,7 +90,9 @@ pub async fn main(opt: Opt) {
     };
 
     let mut listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    let server = listener.incoming().try_fold(Http::new(), |http, sock| {
+    let incoming =
+        stream::poll_fn(move |cx| listener.poll_accept(cx).map(Some)).map_ok(|(sock, _)| sock);
+    let server = incoming.try_fold(Http::new(), move |http, sock| {
         let host = opt.host.clone();
         let mut tx = tx.clone();
         let client = client.clone();
@@ -339,6 +280,75 @@ where
     tokio::spawn(print);
 
     return Response::new(Body::empty());
+}
+
+async fn subscription_renewer<C>(
+    host: Uri,
+    mut rx: futures::channel::mpsc::UnboundedReceiver<tokio::time::Instant>,
+    client: hyper::Client<C>,
+    pool: Pool<ConnectionManager<SqliteConnection>>,
+) where
+    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+{
+    let expiry = active_subscriptions::table
+        .select(active_subscriptions::expires_at)
+        .order(active_subscriptions::expires_at.asc());
+    let mut timer = if let Some(expires_at) = expiry
+        .first::<i64>(&pool.get().unwrap())
+        .optional()
+        .unwrap()
+    {
+        let refresh_time = refresh_time(instant_from_epoch(expires_at));
+        future::Either::Left(tokio::time::delay_until(refresh_time))
+    } else {
+        future::Either::Right(future::pending())
+    };
+
+    loop {
+        match future::select(rx.next(), &mut timer).await {
+            future::Either::Left((Some(expires_at), _)) => {
+                let refresh_time = refresh_time(expires_at);
+                match timer {
+                    future::Either::Left(ref mut timer) => {
+                        if refresh_time < timer.deadline() {
+                            timer.reset(refresh_time);
+                        }
+                    }
+                    future::Either::Right(_) => {
+                        timer = future::Either::Left(tokio::time::delay_until(refresh_time));
+                    }
+                }
+            }
+            future::Either::Left((None, _)) => return,
+            future::Either::Right(((), _)) => {
+                let now_epoch = now_epoch();
+                let threshold: i64 = (now_epoch + RENEW).try_into().unwrap();
+
+                let conn = pool.get().unwrap();
+                let expiring_subscriptions = active_subscriptions::table
+                    .inner_join(subscriptions::table)
+                    .select((subscriptions::hub, subscriptions::topic))
+                    .filter(active_subscriptions::expires_at.le(threshold))
+                    .load::<(String, String)>(&pool.get().unwrap())
+                    .unwrap();
+                for (hub, topic) in expiring_subscriptions {
+                    tokio::spawn(sub::subscribe(&host, &hub, &topic, &client, &conn));
+                }
+
+                if let Some(expires_at) = expiry
+                    .first::<i64>(&pool.get().unwrap())
+                    .optional()
+                    .unwrap()
+                {
+                    let refresh_time = refresh_time(instant_from_epoch(expires_at));
+                    match timer {
+                        future::Either::Left(ref mut timer) => timer.reset(refresh_time),
+                        future::Either::Right(_pending) => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn deserialize_str_as_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
