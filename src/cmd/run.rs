@@ -69,20 +69,16 @@ pub async fn main(opt: Opt) {
     let (tx, mut rx) = futures::channel::mpsc::unbounded();
 
     let subscription_renewer = async {
-        let first_expiry = active_subscriptions::table
+        let expiry = active_subscriptions::table
             .select(active_subscriptions::expires_at)
-            .order(active_subscriptions::expires_at.asc())
+            .order(active_subscriptions::expires_at.asc());
+        let mut timer = if let Some(expires_at) = expiry
             .first::<i64>(&pool.get().unwrap())
             .optional()
-            .unwrap();
-        let mut timer = if let Some(expiry_epoch) = first_expiry {
-            let now_i = tokio::time::Instant::now();
-            let now_epoch = now_epoch();
-            let eta = u64::try_from(expiry_epoch)
-                .unwrap()
-                .saturating_sub(now_epoch);
-            let expiry = now_i + tokio::time::Duration::from_secs(eta);
-            future::Either::Left(tokio::time::delay_until(expiry))
+            .unwrap()
+        {
+            let refresh_time = refresh_time(instant_from_epoch(expires_at));
+            future::Either::Left(tokio::time::delay_until(refresh_time))
         } else {
             future::Either::Right(future::pending())
         };
@@ -116,6 +112,18 @@ pub async fn main(opt: Opt) {
                         .unwrap();
                     for sub in expiring_subscriptions {
                         tokio::spawn(sub::subscribe(&opt.host, &sub.0, &sub.1, &client, &conn));
+                    }
+
+                    if let Some(expires_at) = expiry
+                        .first::<i64>(&pool.get().unwrap())
+                        .optional()
+                        .unwrap()
+                    {
+                        let refresh_time = refresh_time(instant_from_epoch(expires_at));
+                        match timer {
+                            future::Either::Left(ref mut timer) => timer.reset(refresh_time),
+                            future::Either::Right(_pending) => unreachable!(),
+                        }
                     }
                 }
             }
@@ -354,6 +362,13 @@ fn deserialize_str_as_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64,
 
 fn refresh_time(expires_at: tokio::time::Instant) -> tokio::time::Instant {
     expires_at + tokio::time::Duration::from_secs(RENEW)
+}
+
+fn instant_from_epoch(epoch: i64) -> tokio::time::Instant {
+    let now_i = tokio::time::Instant::now();
+    let now_epoch = now_epoch();
+    let eta = u64::try_from(epoch).unwrap().saturating_sub(now_epoch);
+    now_i + tokio::time::Duration::from_secs(eta)
 }
 
 fn now_epoch() -> u64 {
