@@ -110,8 +110,8 @@ pub async fn main(opt: Opt) {
                         .filter(active_subscriptions::expires_at.le(threshold))
                         .load::<(String, String)>(&pool.get().unwrap())
                         .unwrap();
-                    for sub in expiring_subscriptions {
-                        tokio::spawn(sub::subscribe(&opt.host, &sub.0, &sub.1, &client, &conn));
+                    for (hub, topic) in expiring_subscriptions {
+                        tokio::spawn(sub::subscribe(&opt.host, &hub, &topic, &client, &conn));
                     }
 
                     if let Some(expires_at) = expiry
