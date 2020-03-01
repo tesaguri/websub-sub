@@ -87,11 +87,8 @@ pub fn unsubscribe<C>(
 where
     C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
 {
-    let body = serde_urlencoded::to_string(Form::Unsubscribe {
-        callback: &callback(host.clone(), id),
-        topic,
-    })
-    .unwrap();
+    let callback = &callback(host.clone(), id);
+    let body = serde_urlencoded::to_string(Form::Unsubscribe { callback, topic }).unwrap();
     send_request(hub, body, client)
 }
 
@@ -105,22 +102,17 @@ pub fn unsubscribe_all<'a, C>(
 where
     C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
 {
-    let rows = subscriptions::table.filter(
-        subscriptions::hub
-            .eq(hub)
-            .and(subscriptions::topic.eq(topic)),
-    );
+    let rows = subscriptions::table
+        .filter(subscriptions::hub.eq(hub))
+        .filter(subscriptions::topic.eq(topic));
     let ids = rows.select(subscriptions::id).load::<i64>(conn).unwrap();
     // TODO: transaction
     diesel::delete(rows).execute(conn).unwrap();
 
     async move {
         for id in ids {
-            let body = serde_urlencoded::to_string(Form::Unsubscribe {
-                callback: &callback(host.clone(), id),
-                topic,
-            })
-            .unwrap();
+            let callback = &callback(host.clone(), id);
+            let body = serde_urlencoded::to_string(Form::Unsubscribe { callback, topic }).unwrap();
             send_request(hub, body, client).await;
         }
     }

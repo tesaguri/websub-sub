@@ -173,12 +173,11 @@ where
                         .find(id)
                         .get_result::<String>(&conn)
                         .unwrap();
-                    let old_rows = subscriptions::table.filter(
-                        subscriptions::id
-                            .eq_any(active_subscriptions::table.select(active_subscriptions::id))
-                            .and(subscriptions::hub.eq(&hub))
-                            .and(subscriptions::topic.eq(&topic)),
-                    );
+                    let active_ids = active_subscriptions::table.select(active_subscriptions::id);
+                    let old_rows = subscriptions::table
+                        .filter(subscriptions::id.eq_any(active_ids))
+                        .filter(subscriptions::hub.eq(&hub))
+                        .filter(subscriptions::topic.eq(&topic));
                     let old = old_rows
                         .select(subscriptions::id)
                         .load::<i64>(&conn)
