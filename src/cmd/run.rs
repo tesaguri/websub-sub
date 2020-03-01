@@ -14,8 +14,8 @@ use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac};
 use http::{Request, Response, Uri};
-use hyper::server::Server;
-use hyper::service::{make_service_fn, service_fn};
+use hyper::server::conn::Http;
+use hyper::service::service_fn;
 use hyper::{Body, Error};
 use sha1::Sha1;
 use structopt::StructOpt;
@@ -123,18 +123,6 @@ pub async fn main(opt: Opt) {
         }
     };
 
-    let make_svc = make_service_fn(|_| {
-        let host = opt.host.clone();
-        let mut tx = tx.clone();
-        let client = client.clone();
-        let pool = pool.clone();
-        future::ok::<_, Error>(service_fn(move |req: Request<Body>| {
-            eprintln!("* {}", req.uri());
-
-            serve(req, &host, &mut tx, &client, &pool)
-        }))
-    });
-
     let addr = if let Some(addr) = opt.bind {
         addr
     } else {
@@ -155,7 +143,23 @@ pub async fn main(opt: Opt) {
             .unwrap()
     };
 
-    let server = Server::bind(&addr).serve(make_svc);
+    let mut listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let server = listener.incoming().try_fold(Http::new(), |http, sock| {
+        let host = opt.host.clone();
+        let mut tx = tx.clone();
+        let client = client.clone();
+        let pool = pool.clone();
+        let conn = http.serve_connection(
+            sock,
+            service_fn(move |req: Request<Body>| {
+                eprintln!("* {}", req.uri());
+
+                serve(req, &host, &mut tx, &client, &pool)
+            }),
+        );
+        tokio::spawn(conn);
+        future::ok(http)
+    });
 
     let (result, ()) = future::join(server, subscription_renewer).await;
     result.unwrap();
