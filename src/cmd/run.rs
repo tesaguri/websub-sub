@@ -249,12 +249,15 @@ where
     let mut stdout = stdout();
     let print = req
         .into_body()
-        .try_fold(mac, move |mut mac, chunk| {
+        .try_fold((mac, false), move |(mut mac, _), chunk| {
             mac.input(&chunk);
             stdout.write_all(&chunk).unwrap();
-            future::ok(mac)
+            future::ok((mac, chunk.last().copied() == Some(b'\n')))
         })
-        .map_ok(move |mac| {
+        .map_ok(move |(mac, last_byte_is_lf)| {
+            if !last_byte_is_lf {
+                println!();
+            }
             let code = mac.result().code();
             if *code != signature {
                 eprintln!("* signature mismatch");
