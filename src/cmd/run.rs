@@ -53,12 +53,6 @@ enum Verify {
 // XXX: mediocre naming
 const RENEW: u64 = 10;
 
-#[derive(serde::Deserialize)]
-struct Maybe<T> {
-    #[serde(flatten)]
-    value: Option<T>,
-}
-
 const X_HUB_SIGNATURE: &str = "x-hub-signature";
 
 pub async fn main(opt: Opt) {
@@ -138,81 +132,71 @@ where
 
     // Verification of intent (§5.3)
     if let Some(q) = req.uri().query() {
-        if let Some(hub) = serde_urlencoded::from_str::<Maybe<Verify>>(q)
-            .unwrap()
-            .value
-        {
-            let row = |topic| {
-                subscriptions::table
-                    .filter(subscriptions::id.eq(id))
-                    .filter(subscriptions::topic.eq(topic))
-            };
-            let sub_is_active = subscriptions::id
-                .eq_any(active_subscriptions::table.select(active_subscriptions::id));
-            let challenge = match hub {
-                Verify::Subscribe {
-                    topic,
-                    challenge,
-                    lease_seconds,
-                } if select(exists(row(&topic).filter(not(sub_is_active))))
-                    .get_result(&conn)
-                    .unwrap() =>
-                {
-                    let now_i = tokio::time::Instant::now();
-                    let now_epoch = now_epoch();
+        let row = |topic| {
+            subscriptions::table
+                .filter(subscriptions::id.eq(id))
+                .filter(subscriptions::topic.eq(topic))
+        };
+        let sub_is_active =
+            subscriptions::id.eq_any(active_subscriptions::table.select(active_subscriptions::id));
 
-                    let expires_at_epoch: i64 = (now_epoch + lease_seconds).try_into().unwrap();
-                    let expires_at_instant =
-                        now_i + tokio::time::Duration::from_secs(lease_seconds);
+        return match serde_urlencoded::from_str::<Verify>(q) {
+            Ok(Verify::Subscribe {
+                topic,
+                challenge,
+                lease_seconds,
+            }) if select(exists(row(&topic).filter(not(sub_is_active))))
+                .get_result(&conn)
+                .unwrap() =>
+            {
+                let now_i = tokio::time::Instant::now();
+                let now_epoch = now_epoch();
 
-                    tx.unbounded_send(expires_at_instant).unwrap();
+                let expires_at_epoch: i64 = (now_epoch + lease_seconds).try_into().unwrap();
+                let expires_at_instant = now_i + tokio::time::Duration::from_secs(lease_seconds);
 
-                    // Remove the old subscription if the subscription was created by a renewal.
-                    let hub = subscriptions::table
-                        .select(subscriptions::hub)
-                        .find(id)
-                        .get_result::<String>(&conn)
-                        .unwrap();
-                    let active_ids = active_subscriptions::table.select(active_subscriptions::id);
-                    let old_rows = subscriptions::table
-                        .filter(subscriptions::id.eq_any(active_ids))
-                        .filter(subscriptions::hub.eq(&hub))
-                        .filter(subscriptions::topic.eq(&topic));
-                    let old = old_rows
-                        .select(subscriptions::id)
-                        .load::<i64>(&conn)
-                        .unwrap();
-                    delete(old_rows).execute(&conn).unwrap();
-                    for sub in old {
-                        tokio::spawn(sub::unsubscribe(host, sub, &hub, &topic, client));
-                    }
+                tx.unbounded_send(expires_at_instant).unwrap();
 
-                    insert_into(active_subscriptions::table)
-                        .values((
-                            active_subscriptions::id.eq(id),
-                            active_subscriptions::expires_at.eq(expires_at_epoch),
-                        ))
-                        .execute(&conn)
-                        .unwrap();
-
-                    Some(challenge)
-                }
-                Verify::Unsubscribe { topic, challenge }
-                    if select(not(exists(row(&topic)))).get_result(&conn).unwrap() =>
-                {
-                    Some(challenge)
-                }
-                _ => None,
-            };
-            if let Some(challenge) = challenge {
-                return Response::new(Body::from(challenge));
-            } else {
-                return Response::builder()
-                    .status(http::StatusCode::NOT_FOUND)
-                    .body(Body::empty())
+                // Remove the old subscription if the subscription was created by a renewal.
+                let hub = subscriptions::table
+                    .select(subscriptions::hub)
+                    .find(id)
+                    .get_result::<String>(&conn)
                     .unwrap();
+                let active_ids = active_subscriptions::table.select(active_subscriptions::id);
+                let old_rows = subscriptions::table
+                    .filter(subscriptions::id.eq_any(active_ids))
+                    .filter(subscriptions::hub.eq(&hub))
+                    .filter(subscriptions::topic.eq(&topic));
+                let old = old_rows
+                    .select(subscriptions::id)
+                    .load::<i64>(&conn)
+                    .unwrap();
+                delete(old_rows).execute(&conn).unwrap();
+                for sub in old {
+                    tokio::spawn(sub::unsubscribe(host, sub, &hub, &topic, client));
+                }
+
+                insert_into(active_subscriptions::table)
+                    .values((
+                        active_subscriptions::id.eq(id),
+                        active_subscriptions::expires_at.eq(expires_at_epoch),
+                    ))
+                    .execute(&conn)
+                    .unwrap();
+
+                Response::new(Body::from(challenge))
             }
-        }
+            Ok(Verify::Unsubscribe { topic, challenge })
+                if select(not(exists(row(&topic)))).get_result(&conn).unwrap() =>
+            {
+                Response::new(Body::from(challenge))
+            }
+            _ => Response::builder()
+                .status(http::StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap(),
+        };
     }
 
     let mac = {
