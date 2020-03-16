@@ -5,6 +5,7 @@ mod cmd;
 mod common;
 mod schema;
 mod sub;
+mod subscriber;
 
 use structopt::StructOpt;
 
