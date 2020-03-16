@@ -6,6 +6,7 @@ edition = "2018"
 publish = false
 
 [dependencies]
+atom_syndication = "0.8"
 base64 = "0.11"
 diesel = { version = "1.4.3", default-features = false, features = ["r2d2", "sqlite"] }
 structopt = "0.3.0"
@@ -18,6 +19,7 @@ hmac = "0.7"
 http = "0.2"
 hyper = { version = "0.13.0", features = ["stream"] }
 hyper-tls = "0.4"
+mime = "0.3"
 rand = "0.7"
 sha-1 = "0.8"
 tokio = { version = "0.2.0", features = ["macros"] }

@@ -46,7 +46,7 @@ pub async fn main(opt: Opt) {
 
     subscriber
         .for_each(|feed| {
-            stdout.write_all(&feed.content).unwrap();
+            feed.write_to(&mut stdout).unwrap();
             stdout.write_all(b"\n").unwrap();
             future::ready(())
         })

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
+use atom_syndication::Feed;
 use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
@@ -12,9 +13,11 @@ use futures::{channel::mpsc, future, FutureExt, Stream, StreamExt, TryFutureExt,
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac};
+use http::header::CONTENT_TYPE;
 use http::{Request, Response, StatusCode, Uri};
 use hyper::server::conn::Http;
 use hyper::{Body, Client};
+use mime::Mime;
 use sha1::Sha1;
 use tokio::net::TcpListener;
 
@@ -27,10 +30,6 @@ pub struct Subscriber<C> {
     timer: Option<tokio::time::Delay>,
     rx: mpsc::UnboundedReceiver<Message>,
     shared: Arc<Shared<Client<C>>>,
-}
-
-pub struct Feed {
-    pub content: Vec<u8>,
 }
 
 struct Service<S> {
@@ -219,6 +218,24 @@ where
             return self.verify_intent(id, q, &conn);
         }
 
+        match req
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<Mime>().ok())
+        {
+            Some(m)
+                if m.type_() == mime::APPLICATION
+                    && m.subtype() == "atom"
+                    && m.suffix().map(|s| s.as_str()) == Some("xml") => {}
+            _ => {
+                return Response::builder()
+                    .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+        }
+
         let signature_header = if let Some(v) = req.headers().get(X_HUB_SIGNATURE) {
             v.as_bytes()
         } else {
@@ -274,10 +291,10 @@ where
                 mac.input(&chunk);
                 future::ok((vec, mac))
             })
-            .map_ok(move |(content, mac)| {
+            .map_ok(move |(vec, mac)| {
                 let code = mac.result().code();
                 if *code == signature {
-                    let feed = Feed { content };
+                    let feed = Feed::read_from(&*vec).unwrap();
                     tx.unbounded_send(Message::Feed(feed)).unwrap();
                 } else {
                     eprintln!("* signature mismatch");
