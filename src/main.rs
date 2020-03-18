@@ -3,6 +3,7 @@ extern crate diesel;
 
 mod cmd;
 mod common;
+mod feed;
 mod schema;
 mod sub;
 mod subscriber;

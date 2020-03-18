@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
-use atom_syndication::Feed;
 use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
@@ -21,6 +20,7 @@ use mime::Mime;
 use sha1::Sha1;
 use tokio::net::TcpListener;
 
+use crate::feed::Feed;
 use crate::schema::*;
 use crate::sub;
 
@@ -37,7 +37,7 @@ struct Service<S> {
 }
 
 enum Message {
-    Feed(Feed),
+    Feed((MediaType, Vec<u8>)),
     UpdateTimer(tokio::time::Instant),
 }
 
@@ -71,6 +71,12 @@ enum Verify {
         #[serde(rename = "hub.challenge")]
         challenge: String,
     },
+}
+
+enum MediaType {
+    Atom,
+    Rss,
+    Xml,
 }
 
 // XXX: mediocre naming
@@ -175,7 +181,9 @@ where
 
         while let Poll::Ready(msg) = self.rx.poll_next_unpin(cx) {
             match msg {
-                Some(Message::Feed(feed)) => return Poll::Ready(Some(feed)),
+                Some(Message::Feed((kind, feed))) => {
+                    return Poll::Ready(Some(parse_feed(&feed, kind)));
+                }
                 Some(Message::UpdateTimer(expires_at)) => {
                     let refresh_time = refresh_time(expires_at);
                     if let Some(ref mut timer) = self.timer {
@@ -218,23 +226,21 @@ where
             return self.verify_intent(id, q, &conn);
         }
 
-        match req
+        let kind = if let Some(m) = req
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<Mime>().ok())
+            .and_then(|s| s.parse::<MediaType>().ok())
         {
-            Some(m)
-                if m.type_() == mime::APPLICATION
-                    && m.subtype() == "atom"
-                    && m.suffix().map(|s| s.as_str()) == Some("xml") => {}
-            _ => {
+            m
+        } else {
+            {
                 return Response::builder()
                     .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
                     .body(Body::empty())
                     .unwrap();
             }
-        }
+        };
 
         let signature_header = if let Some(v) = req.headers().get(X_HUB_SIGNATURE) {
             v.as_bytes()
@@ -294,8 +300,7 @@ where
             .map_ok(move |(vec, mac)| {
                 let code = mac.result().code();
                 if *code == signature {
-                    let feed = Feed::read_from(&*vec).unwrap();
-                    tx.unbounded_send(Message::Feed(feed)).unwrap();
+                    tx.unbounded_send(Message::Feed((kind, vec))).unwrap();
                 } else {
                     eprintln!("* signature mismatch");
                 }
@@ -400,6 +405,47 @@ where
 impl From<Infallible> for Box<dyn std::error::Error + Send + Sync> {
     fn from(i: Infallible) -> Self {
         match i {}
+    }
+}
+
+impl std::str::FromStr for MediaType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        let mime = if let Ok(m) = s.parse::<Mime>() {
+            m
+        } else {
+            return Err(());
+        };
+
+        if mime.type_() == mime::APPLICATION
+            && mime.subtype() == "atom"
+            && mime.suffix() == Some(mime::XML)
+        {
+            Ok(MediaType::Atom)
+        } else if mime.type_() == mime::APPLICATION
+            && (mime.subtype() == "rss" || mime.subtype() == "rdf")
+            && mime.suffix() == Some(mime::XML)
+        {
+            Ok(MediaType::Rss)
+        } else if (mime.type_() == mime::APPLICATION || mime.type_() == mime::TEXT)
+            && mime.subtype() == mime::XML
+        {
+            Ok(MediaType::Xml)
+        } else {
+            Err(())
+        }
+    }
+}
+
+fn parse_feed(body: &[u8], kind: MediaType) -> Feed {
+    match kind {
+        MediaType::Atom => atom::Feed::read_from(body).unwrap().into(),
+        MediaType::Rss => rss::Channel::read_from(body).unwrap().into(),
+        MediaType::Xml => match atom::Feed::read_from(body) {
+            Ok(feed) => feed.into(),
+            Err(_) => rss::Channel::read_from(body).unwrap().into(),
+        },
     }
 }
 

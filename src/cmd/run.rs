@@ -46,8 +46,20 @@ pub async fn main(opt: Opt) {
 
     subscriber
         .for_each(|feed| {
-            feed.write_to(&mut stdout).unwrap();
-            stdout.write_all(b"\n").unwrap();
+            writeln!(stdout, "Feed: {} ({})", feed.title, feed.id).unwrap();
+            for e in feed.entries {
+                stdout.write_all(b"Entry:").unwrap();
+                if let Some(title) = e.title {
+                    write!(stdout, " {}", title).unwrap();
+                }
+                if let Some(id) = e.id {
+                    write!(stdout, " (ID: {})", id).unwrap();
+                }
+                if let Some(link) = e.link {
+                    write!(stdout, " (link: {})", link).unwrap();
+                }
+                stdout.write_all(b"\n").unwrap();
+            }
             future::ready(())
         })
         .await;
