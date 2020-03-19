@@ -1,5 +1,7 @@
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
+use std::fmt::Debug;
+use std::marker::Unpin;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -8,7 +10,8 @@ use std::time::SystemTime;
 use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use futures::{channel::mpsc, future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::channel::mpsc;
+use futures::{future, FutureExt, Stream, StreamExt, TryFutureExt, TryStream, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac};
@@ -18,14 +21,14 @@ use hyper::server::conn::Http;
 use hyper::{Body, Client};
 use mime::Mime;
 use sha1::Sha1;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::feed::Feed;
 use crate::schema::*;
 use crate::sub;
 
-pub struct Subscriber<C> {
-    listener: TcpListener,
+pub struct Subscriber<L, C> {
+    listener: L,
     http: Http,
     timer: Option<tokio::time::Delay>,
     rx: mpsc::UnboundedReceiver<Message>,
@@ -84,12 +87,15 @@ const RENEW: u64 = 10;
 
 const X_HUB_SIGNATURE: &str = "x-hub-signature";
 
-impl<C> Subscriber<C>
+impl<L, C> Subscriber<L, C>
 where
+    L: TryStream + Unpin,
+    L::Ok: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+    L::Error: Debug,
     C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
 {
     pub fn new(
-        listener: TcpListener,
+        listener: L,
         host: Uri,
         client: Client<C>,
         pool: Pool<ConnectionManager<SqliteConnection>>,
@@ -157,8 +163,8 @@ where
     }
 
     fn accept_all(&mut self, cx: &mut Context<'_>) {
-        while let Poll::Ready(result) = self.listener.poll_accept(cx) {
-            let (sock, _) = result.unwrap();
+        while let Poll::Ready(option) = self.listener.try_poll_next_unpin(cx) {
+            let sock = option.unwrap().unwrap();
 
             let service = Service {
                 shared: self.shared.clone(),
@@ -169,8 +175,11 @@ where
     }
 }
 
-impl<C> Stream for Subscriber<C>
+impl<L, C> Stream for Subscriber<L, C>
 where
+    L: TryStream + Unpin,
+    L::Ok: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+    L::Error: Debug,
     C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
 {
     type Item = Feed;
