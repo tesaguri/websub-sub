@@ -10,6 +10,12 @@ struct ConnectionCustomizer;
 
 const DB_URL: &str = "websub.sqlite3";
 
+impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for ConnectionCustomizer {
+    fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
+        pragma_foreign_keys_on(conn).map_err(diesel::r2d2::Error::QueryError)
+    }
+}
+
 pub fn open_database() -> SqliteConnection {
     let conn = SqliteConnection::establish(DB_URL).unwrap();
     pragma_foreign_keys_on(&conn).unwrap();
@@ -26,12 +32,6 @@ pub fn database_pool() -> Pool<ConnectionManager<SqliteConnection>> {
 
 pub fn http_client() -> Client<HttpsConnector<HttpConnector>> {
     Client::builder().build(HttpsConnector::new())
-}
-
-impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for ConnectionCustomizer {
-    fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
-        pragma_foreign_keys_on(conn).map_err(diesel::r2d2::Error::QueryError)
-    }
 }
 
 fn pragma_foreign_keys_on(conn: &SqliteConnection) -> Result<(), diesel::result::Error> {

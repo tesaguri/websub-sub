@@ -17,6 +17,7 @@ use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac};
 use http::header::CONTENT_TYPE;
 use http::{Request, Response, StatusCode, Uri};
+use hyper::client::connect::Connect;
 use hyper::server::conn::Http;
 use hyper::{Body, Client};
 use mime::Mime;
@@ -92,7 +93,7 @@ where
     L: TryStream + Unpin,
     L::Ok: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     L::Error: Debug,
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     pub fn new(
         listener: L,
@@ -133,32 +134,38 @@ where
     }
 
     fn renew_subscriptions(&mut self, cx: &mut Context<'_>) {
-        if let Some(ref mut timer) = self.timer {
-            if let Poll::Ready(()) = timer.poll_unpin(cx) {
-                let now_epoch = now_epoch();
-                let threshold: i64 = (now_epoch + RENEW).try_into().unwrap();
+        let timer = if let Some(ref mut timer) = self.timer {
+            timer
+        } else {
+            return;
+        };
 
-                let conn = self.shared.pool.get().unwrap();
-                let expiring_subscriptions = active_subscriptions::table
-                    .inner_join(subscriptions::table)
-                    .select((subscriptions::hub, subscriptions::topic))
-                    .filter(active_subscriptions::expires_at.le(threshold))
-                    .load::<(String, String)>(&conn)
-                    .unwrap();
-                for (hub, topic) in expiring_subscriptions {
-                    let subscribe =
-                        sub::subscribe(&self.shared.host, &hub, &topic, &self.shared.client, &conn);
-                    tokio::spawn(subscribe);
-                }
+        if timer.poll_unpin(cx).is_pending() {
+            return;
+        }
 
-                let expiry = active_subscriptions::table
-                    .select(active_subscriptions::expires_at)
-                    .order(active_subscriptions::expires_at.asc());
-                if let Some(expires_at) = expiry.first::<i64>(&conn).optional().unwrap() {
-                    let refresh_time = refresh_time(instant_from_epoch(expires_at));
-                    timer.reset(refresh_time);
-                }
-            }
+        let now_epoch = now_epoch();
+        let threshold: i64 = (now_epoch + RENEW).try_into().unwrap();
+
+        let conn = self.shared.pool.get().unwrap();
+        let expiring_subscriptions = active_subscriptions::table
+            .inner_join(subscriptions::table)
+            .select((subscriptions::hub, subscriptions::topic))
+            .filter(active_subscriptions::expires_at.le(threshold))
+            .load::<(String, String)>(&conn)
+            .unwrap();
+        for (hub, topic) in expiring_subscriptions {
+            let subscribe =
+                sub::subscribe(&self.shared.host, &hub, &topic, &self.shared.client, &conn);
+            tokio::spawn(subscribe);
+        }
+
+        let expiry = active_subscriptions::table
+            .select(active_subscriptions::expires_at)
+            .order(active_subscriptions::expires_at.asc());
+        if let Some(expires_at) = expiry.first::<i64>(&conn).optional().unwrap() {
+            let refresh_time = refresh_time(instant_from_epoch(expires_at));
+            timer.reset(refresh_time);
         }
     }
 
@@ -180,7 +187,7 @@ where
     L: TryStream + Unpin,
     L::Ok: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     L::Error: Debug,
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     type Item = Feed;
 
@@ -189,11 +196,9 @@ where
         self.accept_all(cx);
 
         while let Poll::Ready(msg) = self.rx.poll_next_unpin(cx) {
-            match msg {
-                Some(Message::Feed((kind, feed))) => {
-                    return Poll::Ready(Some(parse_feed(&feed, kind)));
-                }
-                Some(Message::UpdateTimer(expires_at)) => {
+            match msg.expect("the channel was closed") {
+                Message::Feed((kind, feed)) => return Poll::Ready(Some(parse_feed(&feed, &kind))),
+                Message::UpdateTimer(expires_at) => {
                     let refresh_time = refresh_time(expires_at);
                     if let Some(ref mut timer) = self.timer {
                         if refresh_time < timer.deadline() {
@@ -203,7 +208,6 @@ where
                         self.timer = Some(tokio::time::delay_until(refresh_time));
                     }
                 }
-                None => return Poll::Ready(None),
             }
         }
 
@@ -213,7 +217,7 @@ where
 
 impl<C> Service<Client<C>>
 where
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     fn call_(&mut self, req: Request<Body>) -> Response<Body> {
         const PREFIX: &str = "/websub/callback/";
@@ -243,12 +247,10 @@ where
         {
             m
         } else {
-            {
-                return Response::builder()
-                    .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-                    .body(Body::empty())
-                    .unwrap();
-            }
+            return Response::builder()
+                .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+                .body(Body::empty())
+                .unwrap();
         };
 
         let signature_header = if let Some(v) = req.headers().get(X_HUB_SIGNATURE) {
@@ -318,6 +320,7 @@ where
 
         Response::new(Body::empty())
     }
+
     fn verify_intent(&self, id: i64, query: &str, conn: &SqliteConnection) -> Response<Body> {
         let row = |topic| {
             subscriptions::table
@@ -396,7 +399,7 @@ where
 
 impl<C> tower_service::Service<Request<Body>> for Service<Client<C>>
 where
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     type Response = Response<Body>;
     type Error = Infallible;
@@ -447,7 +450,7 @@ impl std::str::FromStr for MediaType {
     }
 }
 
-fn parse_feed(body: &[u8], kind: MediaType) -> Feed {
+fn parse_feed(body: &[u8], kind: &MediaType) -> Feed {
     match kind {
         MediaType::Atom => atom::Feed::read_from(body).unwrap().into(),
         MediaType::Rss => rss::Channel::read_from(body).unwrap().into(),

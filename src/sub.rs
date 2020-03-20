@@ -7,6 +7,7 @@ use diesel::SqliteConnection;
 use futures::{future, Future, TryStreamExt};
 use http::header::CONTENT_TYPE;
 use http::uri::{Parts, Uri};
+use hyper::client::connect::Connect;
 use rand::RngCore;
 
 use crate::schema::*;
@@ -41,7 +42,7 @@ pub fn subscribe<C>(
     conn: &SqliteConnection,
 ) -> impl Future<Output = ()>
 where
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     let mut rng = rand::thread_rng();
 
@@ -85,7 +86,7 @@ pub fn unsubscribe<C>(
     client: &hyper::Client<C>,
 ) -> impl Future<Output = ()>
 where
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     let callback = &callback(host.clone(), id);
     let body = serde_urlencoded::to_string(Form::Unsubscribe { callback, topic }).unwrap();
@@ -100,7 +101,7 @@ pub fn unsubscribe_all<'a, C>(
     conn: &SqliteConnection,
 ) -> impl Future<Output = ()> + 'a
 where
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     let rows = subscriptions::table
         .filter(subscriptions::hub.eq(hub))
@@ -120,7 +121,7 @@ where
 
 fn send_request<C>(hub: &str, body: String, client: &hyper::Client<C>) -> impl Future<Output = ()>
 where
-    C: hyper::client::connect::Connect + Clone + Send + Sync + 'static,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     let req = http::Request::post(hub)
         .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
