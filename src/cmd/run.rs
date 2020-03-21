@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{stdout, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
@@ -26,7 +27,9 @@ pub async fn main(opt: Opt) {
             print_all(subscriber).await;
         } else if bind.starts_with("unix://") {
             let path = Path::new(&bind[7..]);
+            let _ = fs::remove_file(path);
             let listener = tokio::net::UnixListener::bind(path).unwrap();
+            let _guard = crate::common::RmOnDrop(path);
             let subscriber = Subscriber::new(listener, opt.host, client, pool);
             print_all(subscriber).await;
         } else {

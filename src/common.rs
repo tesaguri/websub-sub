@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::Path;
+
 use diesel::dsl::sql_query;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool};
@@ -8,7 +11,15 @@ use hyper_tls::HttpsConnector;
 #[derive(Debug)]
 struct ConnectionCustomizer;
 
+pub struct RmOnDrop<P: AsRef<Path>>(pub P);
+
 const DB_URL: &str = "websub.sqlite3";
+
+impl<P: AsRef<Path>> Drop for RmOnDrop<P> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for ConnectionCustomizer {
     fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
