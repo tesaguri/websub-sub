@@ -68,6 +68,8 @@ where
         }
     };
 
+    log::info!("Subscribing to topic {} at hub {} ({})", topic, hub, id);
+
     let body = serde_urlencoded::to_string(Form::Subscribe {
         callback: &callback(host.clone(), id),
         topic,
@@ -88,6 +90,8 @@ pub fn unsubscribe<C>(
 where
     C: Connect + Clone + Send + Sync + 'static,
 {
+    log::info!("Unsubscribing from topic {} at hub {} ({})", topic, hub, id);
+
     let callback = &callback(host.clone(), id);
     let body = serde_urlencoded::to_string(Form::Unsubscribe { callback, topic }).unwrap();
     send_request(hub, body, client)
@@ -103,6 +107,8 @@ pub fn unsubscribe_all<'a, C>(
 where
     C: Connect + Clone + Send + Sync + 'static,
 {
+    log::info!("Unsubscribing from topic {} at hub {}", topic, hub);
+
     let rows = subscriptions::table
         .filter(subscriptions::hub.eq(hub))
         .filter(subscriptions::topic.eq(topic));
@@ -132,8 +138,10 @@ where
 
     async {
         let res = res.await.unwrap();
-        if res.status().is_success() {
-            eprintln!("success");
+        let status = res.status();
+
+        if status.is_success() {
+            log::info!("Request succeeded");
             return;
         }
 
@@ -146,7 +154,7 @@ where
             })
             .await
             .unwrap();
-        eprintln!("error: {}", body);
+        log::error!("HTTP error {}: {}", status, body);
     }
 }
 

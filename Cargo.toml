@@ -9,12 +9,14 @@ publish = false
 atom = { version = "0.8", package = "atom_syndication" }
 base64 = "0.11"
 diesel = { version = "1.4.3", default-features = false, features = ["r2d2", "sqlite"] }
+env_logger = "0.7"
 futures = "0.3"
 hex = "0.4"
 hmac = "0.7"
 http = "0.2"
 hyper = { version = "0.13", features = ["stream"] }
 hyper-tls = "0.4"
+log = "0.4"
 mime = "0.3"
 rand = "0.7"
 rss = "1"

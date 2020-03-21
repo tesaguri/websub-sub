@@ -148,13 +148,16 @@ where
         let threshold: i64 = (now_epoch + RENEW).try_into().unwrap();
 
         let conn = self.shared.pool.get().unwrap();
-        let expiring_subscriptions = active_subscriptions::table
+        let expiring = active_subscriptions::table
             .inner_join(subscriptions::table)
             .select((subscriptions::hub, subscriptions::topic))
             .filter(active_subscriptions::expires_at.le(threshold))
             .load::<(String, String)>(&conn)
             .unwrap();
-        for (hub, topic) in expiring_subscriptions {
+
+        log::info!("Renewing {} expiring subscription(s)", expiring.len());
+
+        for (hub, topic) in expiring {
             let subscribe =
                 sub::subscribe(&self.shared.host, &hub, &topic, &self.shared.client, &conn);
             tokio::spawn(subscribe);
@@ -192,6 +195,8 @@ where
     type Item = Feed;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Feed>> {
+        log::trace!("Subscriber::poll_next");
+
         self.renew_subscriptions(cx);
         self.accept_all(cx);
 
@@ -256,7 +261,7 @@ where
         let signature_header = if let Some(v) = req.headers().get(X_HUB_SIGNATURE) {
             v.as_bytes()
         } else {
-            eprintln!("* missing signature");
+            log::debug!("Callback {}: missing signature", id);
             return Response::new(Body::empty());
         };
 
@@ -265,7 +270,7 @@ where
             let (method, hex) = signature_header.split_at(i);
             (method, &hex[1..])
         } else {
-            eprintln!("* malformed signature");
+            log::debug!("Callback {}: malformed signature", id);
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(Body::empty())
@@ -280,10 +285,8 @@ where
                 buf
             }
             _ => {
-                eprintln!(
-                    "* unknown digest algorithm: {}",
-                    String::from_utf8_lossy(method)
-                );
+                let method = String::from_utf8_lossy(method);
+                log::debug!("Callback {}: unknown digest algorithm: {}", id, method);
                 return Response::builder()
                     .status(StatusCode::NOT_ACCEPTABLE)
                     .body(Body::empty())
@@ -313,7 +316,7 @@ where
                 if *code == signature {
                     tx.unbounded_send(Message::Feed((kind, vec))).unwrap();
                 } else {
-                    eprintln!("* signature mismatch");
+                    log::debug!("Callback {}: signature mismatch", id);
                 }
             });
         tokio::spawn(verify_signature);
@@ -339,6 +342,8 @@ where
                 .get_result(conn)
                 .unwrap() =>
             {
+                log::info!("Verifying subscription {}", id);
+
                 let now_i = tokio::time::Instant::now();
                 let now_epoch = now_epoch();
 
@@ -363,6 +368,7 @@ where
                     .select(subscriptions::id)
                     .load::<i64>(conn)
                     .unwrap();
+                log::info!("Removing {} old subscriptions", old.len());
                 delete(old_rows).execute(conn).unwrap();
                 for sub in old {
                     tokio::spawn(sub::unsubscribe(
@@ -387,6 +393,7 @@ where
             Ok(Verify::Unsubscribe { topic, challenge })
                 if select(not(exists(row(&topic)))).get_result(conn).unwrap() =>
             {
+                log::info!("Vefirying unsubscription of {}", id);
                 Response::new(Body::from(challenge))
             }
             _ => Response::builder()
@@ -410,6 +417,7 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
+        log::trace!("Service::call; req.uri()={:?}", req.uri());
         future::ok(self.call_(req))
     }
 }

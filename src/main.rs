@@ -19,6 +19,8 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let cmd = Cmd::from_args();
     match cmd {
         Cmd::Run(opt) => cmd::run::main(opt).await,
