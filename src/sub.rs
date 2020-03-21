@@ -68,6 +68,11 @@ where
         }
     };
 
+    diesel::insert_into(pending_subscriptions::table)
+        .values(pending_subscriptions::id.eq(id))
+        .execute(conn)
+        .unwrap();
+
     log::info!("Subscribing to topic {} at hub {} ({})", topic, hub, id);
 
     let body = serde_urlencoded::to_string(Form::Subscribe {

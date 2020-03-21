@@ -148,10 +148,22 @@ where
         let threshold: i64 = (now_epoch + RENEW).try_into().unwrap();
 
         let conn = self.shared.pool.get().unwrap();
-        let expiring = active_subscriptions::table
-            .inner_join(subscriptions::table)
+        let pending_exists = sql("\
+            EXISTS \
+            (\
+                SELECT * \
+            FROM pending_subscriptions \
+                INNER JOIN subscriptions AS pending ON pending.id = pending_subscriptions.id \
+            WHERE \
+                pending.hub = subscriptions.hub \
+                AND pending.topic = subscriptions.topic\
+            )\
+        ");
+        let expiring = subscriptions::table
+            .inner_join(active_subscriptions::table)
             .select((subscriptions::hub, subscriptions::topic))
             .filter(active_subscriptions::expires_at.le(threshold))
+            .filter(not(pending_exists))
             .load::<(String, String)>(&conn)
             .unwrap();
 
@@ -359,9 +371,8 @@ where
                     .find(id)
                     .get_result::<String>(conn)
                     .unwrap();
-                let active_ids = active_subscriptions::table.select(active_subscriptions::id);
                 let old_rows = subscriptions::table
-                    .filter(subscriptions::id.eq_any(active_ids))
+                    .filter(not(subscriptions::id.eq(id)))
                     .filter(subscriptions::hub.eq(&hub))
                     .filter(subscriptions::topic.eq(&topic));
                 let old = old_rows
@@ -369,7 +380,6 @@ where
                     .load::<i64>(conn)
                     .unwrap();
                 log::info!("Removing {} old subscriptions", old.len());
-                delete(old_rows).execute(conn).unwrap();
                 for sub in old {
                     tokio::spawn(sub::unsubscribe(
                         &self.shared.host,
@@ -379,14 +389,19 @@ where
                         &self.shared.client,
                     ));
                 }
+                delete(old_rows).execute(conn).unwrap();
 
-                insert_into(active_subscriptions::table)
-                    .values((
-                        active_subscriptions::id.eq(id),
-                        active_subscriptions::expires_at.eq(expires_at_epoch),
-                    ))
-                    .execute(conn)
-                    .unwrap();
+                conn.transaction(|| {
+                    delete(pending_subscriptions::table.filter(pending_subscriptions::id.eq(id)))
+                        .execute(conn)?;
+                    insert_into(active_subscriptions::table)
+                        .values((
+                            active_subscriptions::id.eq(id),
+                            active_subscriptions::expires_at.eq(expires_at_epoch),
+                        ))
+                        .execute(conn)
+                })
+                .unwrap();
 
                 Response::new(Body::from(challenge))
             }
