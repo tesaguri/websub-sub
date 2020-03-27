@@ -23,6 +23,7 @@ rss = "1"
 serde = { version = "1", features = ["derive"] }
 serde_urlencoded = "0.6"
 sha-1 = "0.8"
+string = { version = "0.2", default-features = false }
 structopt = "0.3"
 tokio = { version = "0.2", features = ["macros", "stream", "tcp", "time", "uds"] }
 tower-service = "0.3"
