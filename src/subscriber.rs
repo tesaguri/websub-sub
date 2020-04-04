@@ -119,9 +119,16 @@ where
             tokio::spawn(self.service.renew(id, &hub, &topic, &conn));
         }
 
-        if let Some(expires_at) = expiry().first::<i64>(&conn).optional().unwrap() {
+        if let Some(expires_at) = expiry()
+            .filter(not(active_subscriptions::id.eq_any(renewing)))
+            .first::<i64>(&conn)
+            .optional()
+            .unwrap()
+        {
             let refresh_time = refresh_time(instant_from_epoch(expires_at));
             timer.reset(refresh_time);
+        } else {
+            self.timer = None;
         }
     }
 
