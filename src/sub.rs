@@ -110,11 +110,16 @@ pub fn unsubscribe<C>(
     hub: &str,
     topic: &str,
     client: &Client<C>,
+    conn: &SqliteConnection,
 ) -> impl Future<Output = ()>
 where
     C: Connect + Clone + Send + Sync + 'static,
 {
     log::info!("Unsubscribing from topic {} at hub {} ({})", topic, hub, id);
+
+    diesel::delete(subscriptions::table.find(id))
+        .execute(conn)
+        .unwrap();
 
     let callback = &callback(host.clone(), id);
     let body = serde_urlencoded::to_string(Form::Unsubscribe { callback, topic }).unwrap();

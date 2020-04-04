@@ -74,8 +74,14 @@ where
         sub::renew(&self.host, id, hub, topic, &self.client, conn)
     }
 
-    pub(super) fn unsubscribe(&self, id: i64, hub: &str, topic: &str) -> impl Future<Output = ()> {
-        sub::unsubscribe(&self.host, id, hub, topic, &self.client)
+    pub(super) fn unsubscribe(
+        &self,
+        id: i64,
+        hub: &str,
+        topic: &str,
+        conn: &SqliteConnection,
+    ) -> impl Future<Output = ()> {
+        sub::unsubscribe(&self.host, id, hub, topic, &self.client, conn)
     }
 
     fn call(&self, req: Request<Body>) -> Response<Body> {
@@ -232,9 +238,8 @@ where
                 self.tx.unbounded_send(msg).unwrap();
 
                 // Remove the old subscription if the subscription was created by a renewal.
-                let old_row =
-                    renewing_subscriptions::table.filter(renewing_subscriptions::new.eq(id));
-                let old_id = old_row
+                let old_id = renewing_subscriptions::table
+                    .filter(renewing_subscriptions::new.eq(id))
                     .select(renewing_subscriptions::old)
                     .get_result::<i64>(conn)
                     .optional()
@@ -246,8 +251,7 @@ where
                         .get_result::<String>(conn)
                         .unwrap();
                     log::info!("Removing the old subscription");
-                    tokio::spawn(self.unsubscribe(old_id, &hub, &topic));
-                    delete(old_row).execute(conn).unwrap();
+                    tokio::spawn(self.unsubscribe(old_id, &hub, &topic, conn));
                 }
 
                 conn.transaction(|| {
