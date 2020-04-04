@@ -41,7 +41,7 @@ enum Verify {
         #[serde(rename = "hub.topic")]
         topic: String,
         #[serde(rename = "hub.challenge")]
-        challenge: Vec<u8>,
+        challenge: String,
         #[serde(rename = "hub.lease_seconds")]
         #[serde(deserialize_with = "deserialize_str_as_u64")]
         lease_seconds: u64,
@@ -51,7 +51,7 @@ enum Verify {
         #[serde(rename = "hub.topic")]
         topic: String,
         #[serde(rename = "hub.challenge")]
-        challenge: Vec<u8>,
+        challenge: String,
     },
 }
 
