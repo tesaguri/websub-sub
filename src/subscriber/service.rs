@@ -1,4 +1,5 @@
 use std::convert::{TryFrom, TryInto};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -6,6 +7,7 @@ use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
 use futures::channel::mpsc;
+use futures::task::AtomicWaker;
 use futures::{future, Future, TryFutureExt, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
@@ -20,17 +22,19 @@ use std::fmt;
 use crate::schema::*;
 use crate::sub;
 
-use super::Msg;
+use super::MediaType;
 
 pub(super) struct Service<C> {
     pub(super) inner: Arc<Inner<C>>,
 }
 
-pub(super) struct Inner<C> {
+pub struct Inner<C> {
     pub(super) host: Uri,
     pub(super) client: Client<C>,
     pub(super) pool: Pool<ConnectionManager<SqliteConnection>>,
-    pub(super) tx: mpsc::UnboundedSender<Msg>,
+    pub(super) tx: mpsc::UnboundedSender<(MediaType, Vec<u8>)>,
+    pub(super) timer_task: AtomicWaker,
+    pub(super) expires_at: AtomicI64,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -84,6 +88,26 @@ where
         sub::unsubscribe(&self.host, id, hub, topic, &self.client, conn)
     }
 
+    pub(super) fn renew_subscriptions(&self, conn: &SqliteConnection) {
+        let now_epoch = super::now_epoch();
+        let threshold: i64 = (now_epoch + super::RENEW).try_into().unwrap();
+
+        let renewing = renewing_subscriptions::table.select(renewing_subscriptions::old);
+        let expiring = subscriptions::table
+            .inner_join(active_subscriptions::table)
+            .select((subscriptions::id, subscriptions::hub, subscriptions::topic))
+            .filter(active_subscriptions::expires_at.le(threshold))
+            .filter(not(subscriptions::id.eq_any(renewing)))
+            .load::<(i64, String, String)>(conn)
+            .unwrap();
+
+        log::info!("Renewing {} expiring subscription(s)", expiring.len());
+
+        for (id, hub, topic) in expiring {
+            tokio::spawn(self.renew(id, &hub, &topic, conn));
+        }
+    }
+
     fn call(&self, req: Request<Body>) -> Response<Body> {
         macro_rules! validate {
             ($input:expr) => {
@@ -116,11 +140,11 @@ where
             return self.verify_intent(id, q, &conn);
         }
 
-        let kind = if let Some(m) = req
+        let kind: MediaType = if let Some(m) = req
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<super::MediaType>().ok())
+            .and_then(|s| s.parse().ok())
         {
             m
         } else {
@@ -195,7 +219,7 @@ where
             .map_ok(move |(vec, mac)| {
                 let code = mac.result().code();
                 if *code == signature {
-                    tx.unbounded_send(Msg::Content((kind, vec))).unwrap();
+                    tx.unbounded_send((kind, vec)).unwrap();
                 } else {
                     log::debug!("Callback {}: signature mismatch", id);
                 }
@@ -225,17 +249,13 @@ where
             {
                 log::info!("Verifying subscription {}", id);
 
-                let now_i = tokio::time::Instant::now();
                 let now_epoch = super::now_epoch();
-
-                let expires_at_epoch = now_epoch
+                let expires_at = now_epoch
                     .saturating_add(lease_seconds)
                     .try_into()
                     .unwrap_or(i64::max_value());
-                let expires_at_instant = now_i + tokio::time::Duration::from_secs(lease_seconds);
 
-                let msg = Msg::UpdateTimer(expires_at_instant);
-                self.tx.unbounded_send(msg).unwrap();
+                self.reset_timer(expires_at);
 
                 // Remove the old subscription if the subscription was created by a renewal.
                 let old_id = renewing_subscriptions::table
@@ -259,7 +279,7 @@ where
                     insert_into(active_subscriptions::table)
                         .values((
                             active_subscriptions::id.eq(id),
-                            active_subscriptions::expires_at.eq(expires_at_epoch),
+                            active_subscriptions::expires_at.eq(expires_at),
                         ))
                         .execute(conn)
                 })
@@ -278,6 +298,19 @@ where
                 .body(Body::empty())
                 .unwrap(),
         }
+    }
+
+    fn reset_timer(&self, expires_at: i64) {
+        let prev = fetch_min(&self.expires_at, expires_at);
+        if expires_at < prev {
+            self.timer_task.wake();
+        }
+    }
+}
+
+impl<C> Drop for Inner<C> {
+    fn drop(&mut self) {
+        self.timer_task.wake();
     }
 }
 
@@ -322,4 +355,17 @@ fn deserialize_str_as_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64,
     }
 
     d.deserialize_str(Visitor)
+}
+
+// TODO: Use `AtomicI64::fetch_min` once it hits stable.
+// https://github.com/rust-lang/rust/issues/48655
+fn fetch_min(atomic: &AtomicI64, val: i64) -> i64 {
+    let mut prev = atomic.load(Ordering::SeqCst);
+    while prev > val {
+        match atomic.compare_exchange_weak(prev, val, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return prev,
+            Err(p) => prev = p,
+        }
+    }
+    prev
 }
