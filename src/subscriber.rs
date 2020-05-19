@@ -164,7 +164,7 @@ fn parse_feed(body: &[u8], kind: &MediaType) -> Feed {
 }
 
 fn refresh_time(expires_at: tokio::time::Instant) -> tokio::time::Instant {
-    expires_at + tokio::time::Duration::from_secs(RENEW)
+    expires_at - tokio::time::Duration::from_secs(RENEW)
 }
 
 fn instant_from_epoch(epoch: i64) -> tokio::time::Instant {
