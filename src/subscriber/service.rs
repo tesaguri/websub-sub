@@ -24,7 +24,6 @@ use tower::ServiceExt;
 
 use crate::feed::{self, Feed, RawFeed};
 use crate::hub;
-use crate::query;
 use crate::schema::*;
 use crate::util::{self, consts::HUB_SIGNATURE, now_unix, CollectBody, HttpService, Never};
 
@@ -162,23 +161,36 @@ where
             .try_into()
             .unwrap();
 
-        let expiring = subscriptions::table
-            .inner_join(active_subscriptions::table)
-            .select((subscriptions::id, subscriptions::hub, subscriptions::topic))
-            .filter(active_subscriptions::expires_at.le(threshold))
-            .filter(not(subscriptions::id.eq_any(query::renewing_subs())))
-            .load::<(i64, String, String)>(conn)
-            .unwrap();
+        let expiring_rows =
+            active_subscriptions::table.filter(active_subscriptions::expires_at.le(threshold));
 
-        if expiring.is_empty() {
-            return;
-        }
+        conn.transaction::<_, diesel::result::Error, _>(|| {
+            let expiring = expiring_rows
+                .inner_join(subscriptions::table)
+                .select((subscriptions::id, subscriptions::hub, subscriptions::topic))
+                .load::<(i64, String, String)>(conn)?;
 
-        log::info!("Renewing {} expiring subscription(s)", expiring.len());
+            if expiring.is_empty() {
+                return Ok(());
+            }
 
-        for (id, hub, topic) in expiring {
-            tokio::spawn(self.renew(id, hub, topic, conn).map(log_and_discard_error));
-        }
+            log::info!("Renewing {} expiring subscription(s)", expiring.len());
+
+            for (id, hub, topic) in expiring {
+                log::info!(
+                    "Renewing a subscription of topic {} at hub {} ({})",
+                    topic,
+                    hub,
+                    id
+                );
+                tokio::spawn(self.subscribe(hub, topic, conn).map(log_and_discard_error));
+            }
+
+            diesel::delete(expiring_rows).execute(conn)?;
+
+            Ok(())
+        })
+        .unwrap();
     }
 
     pub fn unsubscribe_all(
@@ -187,16 +199,6 @@ where
         conn: &SqliteConnection,
     ) -> impl Iterator<Item = impl Future<Output = Result<(), S::Error>>> {
         hub::unsubscribe_all(&self.callback, topic, self.client.clone(), conn)
-    }
-
-    fn renew(
-        &self,
-        id: i64,
-        hub: String,
-        topic: String,
-        conn: &SqliteConnection,
-    ) -> impl Future<Output = Result<(), S::Error>> {
-        hub::renew(&self.callback, id, hub, topic, self.client.clone(), conn)
     }
 
     fn unsubscribe(
@@ -359,67 +361,72 @@ where
         let sub_is_active =
             subscriptions::id.eq_any(active_subscriptions::table.select(active_subscriptions::id));
 
-        match serde_urlencoded::from_str(query) {
+        match serde_urlencoded::from_str::<hub::Verify<String>>(query) {
             Ok(hub::Verify::Subscribe {
                 topic,
                 challenge,
                 lease_seconds,
-            }) if select(exists(row(&topic).filter(not(sub_is_active))))
-                .get_result(conn)
-                .unwrap() =>
-            {
-                log::info!("Verifying subscription {}", id);
-
-                let now_unix = now_unix();
-                let expires_at = now_unix
-                    .as_secs()
-                    .saturating_add(lease_seconds)
-                    .try_into()
-                    .unwrap_or(i64::max_value());
-
-                self.handle.hasten(self.refresh_time(expires_at as u64));
-
-                // Remove the old subscription if the subscription was created by a renewal.
-                let old_id = renewing_subscriptions::table
-                    .find(id)
-                    .select(renewing_subscriptions::old)
-                    .get_result::<i64>(conn)
+            }) => {
+                if let Some(hub) = row(&topic)
+                    .filter(not(sub_is_active))
+                    .select(subscriptions::hub)
+                    .get_result::<String>(conn)
                     .optional()
+                    .unwrap()
+                {
+                    log::info!("Verifying subscription {}", id);
+
+                    let now_unix = now_unix();
+                    let expires_at = now_unix
+                        .as_secs()
+                        .saturating_add(lease_seconds)
+                        .try_into()
+                        .unwrap_or(i64::max_value());
+
+                    self.handle.hasten(self.refresh_time(expires_at as u64));
+
+                    conn.transaction::<_, diesel::result::Error, _>(|| {
+                        // Remove old subscriptions if any.
+                        let old = subscriptions::table
+                            .filter(subscriptions::topic.eq(&topic))
+                            .filter(subscriptions::hub.eq(&hub))
+                            .filter(not(subscriptions::id.eq(id)))
+                            .select(subscriptions::id);
+                        for id in old.load(conn)? {
+                            log::info!("Removing the old subscription");
+                            let task = self
+                                .unsubscribe(id, hub.clone(), topic.clone(), conn)
+                                .map(log_and_discard_error);
+                            tokio::spawn(task);
+                        }
+
+                        insert_into(active_subscriptions::table)
+                            .values((
+                                active_subscriptions::id.eq(id),
+                                active_subscriptions::expires_at.eq(expires_at),
+                            ))
+                            .execute(conn)
+                            .unwrap();
+                        Ok(())
+                    })
                     .unwrap();
-                if let Some(old_id) = old_id {
-                    let hub = subscriptions::table
-                        .select(subscriptions::hub)
-                        .find(id)
-                        .get_result::<String>(conn)
-                        .unwrap();
-                    log::info!("Removing the old subscription");
-                    let task = self
-                        .unsubscribe(old_id, hub, topic, conn)
-                        .map(log_and_discard_error);
-                    tokio::spawn(task);
+
+                    return Response::new(challenge.into());
                 }
-
-                insert_into(active_subscriptions::table)
-                    .values((
-                        active_subscriptions::id.eq(id),
-                        active_subscriptions::expires_at.eq(expires_at),
-                    ))
-                    .execute(conn)
-                    .unwrap();
-
-                Response::new(challenge.into())
             }
             Ok(hub::Verify::Unsubscribe { topic, challenge })
                 if select(not(exists(row(&topic)))).get_result(conn).unwrap() =>
             {
                 log::info!("Vefirying unsubscription of {}", id);
-                Response::new(challenge.into())
+                return Response::new(challenge.into());
             }
-            _ => Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Full::default())
-                .unwrap(),
+            _ => {}
         }
+
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Full::default())
+            .unwrap()
     }
 }
 

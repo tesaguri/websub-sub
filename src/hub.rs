@@ -86,49 +86,6 @@ where
     send_request(hub, topic, body, client)
 }
 
-pub fn renew<S, B>(
-    callback: &Uri,
-    old: i64,
-    hub: String,
-    topic: String,
-    client: S,
-    conn: &SqliteConnection,
-) -> impl Future<Output = Result<(), S::Error>>
-where
-    S: HttpService<B>,
-    B: From<Vec<u8>>,
-{
-    let (new, secret) = conn
-        .transaction(|| {
-            let (new, secret) = create_subscription(&hub, &topic, conn);
-            diesel::insert_into(renewing_subscriptions::table)
-                .values((
-                    renewing_subscriptions::old.eq(old),
-                    renewing_subscriptions::new.eq(new),
-                ))
-                .execute(conn)
-                .map(|_| (new, secret))
-        })
-        .unwrap();
-
-    log::info!(
-        "Renewing a subscription of topic {} at hub {} ({} -> {})",
-        topic,
-        hub,
-        old,
-        new
-    );
-
-    let body = serde_urlencoded::to_string(Form::Subscribe {
-        callback: make_callback(callback.clone(), new),
-        topic: &*topic,
-        secret: &*secret,
-    })
-    .unwrap();
-
-    send_request(hub, topic, body, client)
-}
-
 pub fn unsubscribe<S, B>(
     callback: &Uri,
     id: i64,

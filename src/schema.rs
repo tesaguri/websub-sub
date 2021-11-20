@@ -6,13 +6,6 @@ table! {
 }
 
 table! {
-    renewing_subscriptions (new) {
-        old -> BigInt,
-        new -> BigInt,
-    }
-}
-
-table! {
     subscriptions (id) {
         id -> BigInt,
         hub -> Text,
@@ -22,7 +15,5 @@ table! {
 }
 
 joinable!(active_subscriptions -> subscriptions (id));
-joinable!(renewing_subscriptions -> active_subscriptions (old));
-joinable!(renewing_subscriptions -> subscriptions (new));
 
-allow_tables_to_appear_in_same_query!(active_subscriptions, renewing_subscriptions, subscriptions,);
+allow_tables_to_appear_in_same_query!(active_subscriptions, subscriptions,);

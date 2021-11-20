@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use diesel::dsl::*;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
 use futures::channel::mpsc;
@@ -20,7 +19,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::feed::Feed;
 use crate::query;
-use crate::schema::*;
 use crate::util::{ArcService, HttpService};
 
 use self::scheduler::Scheduler;
@@ -90,7 +88,6 @@ where
             let conn = &*service.pool.get().unwrap();
             service.renew_subscriptions(conn);
             query::expires_at()
-                .filter(not(active_subscriptions::id.eq_any(query::renewing_subs())))
                 .first::<i64>(conn)
                 .optional()
                 .unwrap()
@@ -184,6 +181,7 @@ mod tests {
 
     use bytes::Bytes;
     use diesel::connection::SimpleConnection;
+    use diesel::dsl::*;
     use diesel::r2d2::ConnectionManager;
     use futures::channel::oneshot;
     use futures::future;
@@ -198,6 +196,7 @@ mod tests {
 
     use crate::feed;
     use crate::hub;
+    use crate::schema::*;
     use crate::util::connection::{Connector, Listener};
     use crate::util::consts::{
         APPLICATION_ATOM_XML, APPLICATION_WWW_FORM_URLENCODED, HUB_SIGNATURE,
@@ -575,8 +574,6 @@ mod tests {
         let row = subscriptions::table.find(id);
         assert!(!select(exists(row)).get_result::<bool>(&conn).unwrap());
         let row = active_subscriptions::table.find(id);
-        assert!(!select(exists(row)).get_result::<bool>(&conn).unwrap());
-        let row = renewing_subscriptions::table.filter(renewing_subscriptions::old.eq(id));
         assert!(!select(exists(row)).get_result::<bool>(&conn).unwrap());
     }
 

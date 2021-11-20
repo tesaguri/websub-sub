@@ -8,16 +8,7 @@ diff --git a/src/schema.rs b/src/schema.rs
 +        id -> BigInt,
          expires_at -> BigInt,
      }
-@@ -8,6 +8,6 @@ table! {
- table! {
-     renewing_subscriptions (new) {
--        old -> Integer,
--        new -> Integer,
-+        old -> BigInt,
-+        new -> BigInt,
-     }
- }
-@@ -15,5 +15,5 @@ table! {
+@@ -8,5 +8,5 @@ table! {
  table! {
      subscriptions (id) {
 -        id -> Integer,
