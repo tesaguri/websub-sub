@@ -1,5 +1,4 @@
 diff --git a/src/schema.rs b/src/schema.rs
-index 8fcb093..f7b960b 100644
 --- a/src/schema.rs
 +++ b/src/schema.rs
 @@ -1,5 +1,5 @@
@@ -9,14 +8,7 @@ index 8fcb093..f7b960b 100644
 +        id -> BigInt,
          expires_at -> BigInt,
      }
-@@ -8,5 +8,5 @@ table! {
- table! {
-     pending_subscriptions (id) {
--        id -> Integer,
-+        id -> BigInt,
-         created_at -> BigInt,
-     }
-@@ -15,6 +15,6 @@ table! {
+@@ -8,6 +8,6 @@ table! {
  table! {
      renewing_subscriptions (new) {
 -        old -> Integer,
@@ -25,7 +17,7 @@ index 8fcb093..f7b960b 100644
 +        new -> BigInt,
      }
  }
-@@ -22,5 +22,5 @@ table! {
+@@ -15,5 +15,5 @@ table! {
  table! {
      subscriptions (id) {
 -        id -> Integer,

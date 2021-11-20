@@ -6,13 +6,6 @@ table! {
 }
 
 table! {
-    pending_subscriptions (id) {
-        id -> BigInt,
-        created_at -> BigInt,
-    }
-}
-
-table! {
     renewing_subscriptions (new) {
         old -> BigInt,
         new -> BigInt,
@@ -29,13 +22,7 @@ table! {
 }
 
 joinable!(active_subscriptions -> subscriptions (id));
-joinable!(pending_subscriptions -> subscriptions (id));
 joinable!(renewing_subscriptions -> active_subscriptions (old));
-joinable!(renewing_subscriptions -> pending_subscriptions (new));
+joinable!(renewing_subscriptions -> subscriptions (new));
 
-allow_tables_to_appear_in_same_query!(
-    active_subscriptions,
-    pending_subscriptions,
-    renewing_subscriptions,
-    subscriptions,
-);
+allow_tables_to_appear_in_same_query!(active_subscriptions, renewing_subscriptions, subscriptions,);

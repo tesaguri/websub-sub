@@ -399,16 +399,13 @@ where
                     tokio::spawn(task);
                 }
 
-                conn.transaction(|| {
-                    delete(pending_subscriptions::table.find(id)).execute(conn)?;
-                    insert_into(active_subscriptions::table)
-                        .values((
-                            active_subscriptions::id.eq(id),
-                            active_subscriptions::expires_at.eq(expires_at),
-                        ))
-                        .execute(conn)
-                })
-                .unwrap();
+                insert_into(active_subscriptions::table)
+                    .values((
+                        active_subscriptions::id.eq(id),
+                        active_subscriptions::expires_at.eq(expires_at),
+                    ))
+                    .execute(conn)
+                    .unwrap();
 
                 Response::new(challenge.into())
             }

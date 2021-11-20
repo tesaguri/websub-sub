@@ -254,10 +254,6 @@ fn create_subscription(hub: &str, topic: &str, conn: &SqliteConnection) -> (i64,
                 }
             };
 
-            diesel::insert_into(pending_subscriptions::table)
-                .values(pending_subscriptions::id.eq(id))
-                .execute(conn)?;
-
             Ok(id)
         })
         .unwrap();
