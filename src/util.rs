@@ -44,7 +44,6 @@ pub mod callback_id;
 #[cfg(test)]
 pub mod connection;
 pub mod http_service;
-pub mod r2d2;
 pub mod time;
 
 mod collect_body;

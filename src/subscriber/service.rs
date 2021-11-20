@@ -47,8 +47,7 @@ where
     B: From<Vec<u8>> + Send + 'static,
 {
     pub fn remove_dangling_subscriptions(&self) {
-        let active = active_subscriptions::table.select(active_subscriptions::id);
-        let dangling = subscriptions::table.filter(not(subscriptions::id.eq_any(active)));
+        let dangling = subscriptions::table.filter(subscriptions::expires_at.is_null());
         diesel::delete(dangling)
             .execute(&*self.pool.get().unwrap())
             .unwrap();
@@ -161,12 +160,10 @@ where
             .try_into()
             .unwrap();
 
-        let expiring_rows =
-            active_subscriptions::table.filter(active_subscriptions::expires_at.le(threshold));
+        let expiring_rows = subscriptions::table.filter(subscriptions::expires_at.le(threshold));
 
         conn.transaction::<_, diesel::result::Error, _>(|| {
             let expiring = expiring_rows
-                .inner_join(subscriptions::table)
                 .select((subscriptions::id, subscriptions::hub, subscriptions::topic))
                 .load::<(i64, String, String)>(conn)?;
 
@@ -186,7 +183,9 @@ where
                 tokio::spawn(self.subscribe(hub, topic, conn).map(log_and_discard_error));
             }
 
-            diesel::delete(expiring_rows).execute(conn)?;
+            diesel::update(expiring_rows)
+                .set(subscriptions::expires_at.eq(None::<i64>))
+                .execute(conn)?;
 
             Ok(())
         })
@@ -358,8 +357,6 @@ where
                 .filter(subscriptions::id.eq(id))
                 .filter(subscriptions::topic.eq(topic))
         };
-        let sub_is_active =
-            subscriptions::id.eq_any(active_subscriptions::table.select(active_subscriptions::id));
 
         match serde_urlencoded::from_str::<hub::Verify<String>>(query) {
             Ok(hub::Verify::Subscribe {
@@ -368,7 +365,7 @@ where
                 lease_seconds,
             }) => {
                 if let Some(hub) = row(&topic)
-                    .filter(not(sub_is_active))
+                    .filter(subscriptions::expires_at.is_null())
                     .select(subscriptions::hub)
                     .get_result::<String>(conn)
                     .optional()
@@ -400,11 +397,8 @@ where
                             tokio::spawn(task);
                         }
 
-                        insert_into(active_subscriptions::table)
-                            .values((
-                                active_subscriptions::id.eq(id),
-                                active_subscriptions::expires_at.eq(expires_at),
-                            ))
+                        update(subscriptions::table.find(id))
+                            .set(subscriptions::expires_at.eq(expires_at))
                             .execute(conn)
                             .unwrap();
                         Ok(())

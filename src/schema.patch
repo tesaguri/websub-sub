@@ -3,13 +3,6 @@ diff --git a/src/schema.rs b/src/schema.rs
 +++ b/src/schema.rs
 @@ -1,5 +1,5 @@
  table! {
-     active_subscriptions (id) {
--        id -> Integer,
-+        id -> BigInt,
-         expires_at -> BigInt,
-     }
-@@ -8,5 +8,5 @@ table! {
- table! {
      subscriptions (id) {
 -        id -> Integer,
 +        id -> BigInt,

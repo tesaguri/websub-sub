@@ -18,7 +18,7 @@ use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::feed::Feed;
-use crate::query;
+use crate::schema::*;
 use crate::util::{ArcService, HttpService};
 
 use self::scheduler::Scheduler;
@@ -62,10 +62,16 @@ where
     ) -> Self {
         let renewal_margin = renewal_margin.as_secs();
 
-        let first_tick = query::expires_at()
-            .first::<i64>(&pool.get().unwrap())
+        let expires_at = subscriptions::table
+            .select(subscriptions::expires_at)
+            .filter(subscriptions::expires_at.is_not_null())
+            .order(subscriptions::expires_at.asc());
+
+        let first_tick = expires_at
+            .first::<Option<i64>>(&pool.get().unwrap())
             .optional()
             .unwrap()
+            .flatten()
             .map(|expires_at| {
                 u64::try_from(expires_at).map_or(0, |expires_at| expires_at - renewal_margin)
             });
@@ -84,13 +90,14 @@ where
             _marker: PhantomData,
         });
 
-        tokio::spawn(Scheduler::new(&service, |service| {
+        tokio::spawn(Scheduler::new(&service, move |service| {
             let conn = &*service.pool.get().unwrap();
             service.renew_subscriptions(conn);
-            query::expires_at()
-                .first::<i64>(conn)
+            expires_at
+                .first::<Option<i64>>(conn)
                 .optional()
                 .unwrap()
+                .flatten()
                 .map(|expires_at| {
                     expires_at
                         .try_into()
@@ -180,7 +187,6 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use diesel::connection::SimpleConnection;
     use diesel::dsl::*;
     use diesel::r2d2::ConnectionManager;
     use futures::channel::oneshot;
@@ -196,7 +202,6 @@ mod tests {
 
     use crate::feed;
     use crate::hub;
-    use crate::schema::*;
     use crate::util::connection::{Connector, Listener};
     use crate::util::consts::{
         APPLICATION_ATOM_XML, APPLICATION_WWW_FORM_URLENCODED, HUB_SIGNATURE,
@@ -237,29 +242,30 @@ mod tests {
 
         let begin = i64::try_from(util::now_unix().as_secs()).unwrap();
 
-        let pool = util::r2d2::pool_with_builder(
-            Pool::builder().max_size(1),
-            ConnectionManager::new(":memory:"),
-        )
-        .unwrap();
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(ConnectionManager::new(":memory:"))
+            .unwrap();
         let conn = pool.get().unwrap();
         crate::migrations::run(&*conn).unwrap();
-
-        conn.batch_execute(
-            "INSERT INTO subscriptions (hub, topic, secret)
-            VALUES
-                ('http://example.com/hub', 'http://example.com/topic/1', 'secret1'),
-                ('http://example.com/hub', 'http://example.com/topic/2', 'secret2');",
-        )
-        .unwrap();
 
         let expiry1 = begin + MARGIN.as_secs() as i64 + 1;
         let expiry2 = expiry1 + MARGIN.as_secs() as i64;
         let values = [
-            active_subscriptions::expires_at.eq(expiry1),
-            active_subscriptions::expires_at.eq(expiry2),
+            (
+                subscriptions::hub.eq(HUB),
+                subscriptions::topic.eq("http://example.com/topic/1"),
+                subscriptions::secret.eq("secret1"),
+                subscriptions::expires_at.eq(expiry1),
+            ),
+            (
+                subscriptions::hub.eq(HUB),
+                subscriptions::topic.eq("http://example.com/topic/2"),
+                subscriptions::secret.eq("secret2"),
+                subscriptions::expires_at.eq(expiry2),
+            ),
         ];
-        insert_into(active_subscriptions::table)
+        insert_into(subscriptions::table)
             .values(&values[..])
             .execute(&*conn)
             .unwrap();
@@ -573,8 +579,6 @@ mod tests {
 
         let row = subscriptions::table.find(id);
         assert!(!select(exists(row)).get_result::<bool>(&conn).unwrap());
-        let row = active_subscriptions::table.find(id);
-        assert!(!select(exists(row)).get_result::<bool>(&conn).unwrap());
     }
 
     fn prepare_subscriber() -> (
@@ -582,11 +586,10 @@ mod tests {
         Client<Connector, Full<Bytes>>,
         Listener,
     ) {
-        let pool = util::r2d2::pool_with_builder(
-            Pool::builder().max_size(1),
-            ConnectionManager::new(":memory:"),
-        )
-        .unwrap();
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(ConnectionManager::new(":memory:"))
+            .unwrap();
         crate::migrations::run(&*pool.get().unwrap()).unwrap();
         prepare_subscriber_with_pool(pool)
     }
