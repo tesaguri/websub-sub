@@ -1,18 +1,20 @@
 use http::Uri;
 use structopt::StructOpt;
 
-use crate::sub;
+use crate::hub;
 
 #[derive(StructOpt)]
 pub struct Opt {
-    host: Uri,
+    callback: Uri,
     hub: String,
     topic: String,
 }
 
-pub async fn main(opt: Opt) {
+pub async fn main(opt: Opt) -> anyhow::Result<()> {
     let client = crate::common::http_client();
-    let conn = crate::common::open_database();
+    let conn = crate::common::open_database()?;
 
-    sub::subscribe(&opt.host, &opt.hub, &opt.topic, &client, &conn).await;
+    hub::subscribe(&opt.callback, opt.hub, opt.topic, &client, &conn).await?;
+
+    Ok(())
 }

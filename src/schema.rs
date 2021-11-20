@@ -13,7 +13,7 @@ table! {
 }
 
 table! {
-    renewing_subscriptions (old, new) {
+    renewing_subscriptions (new) {
         old -> BigInt,
         new -> BigInt,
     }

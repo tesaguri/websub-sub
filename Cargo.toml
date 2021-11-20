@@ -2,32 +2,44 @@
 name = "websub-sub"
 version = "0.1.0"
 authors = ["Daiki Mizukami <tesaguriguma@gmail.com>"]
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
-atom = { version = "0.8", package = "atom_syndication" }
-base64 = "0.11"
+anyhow = "1"
+atom = { version = "0.11", package = "atom_syndication" }
+auto_enums = "0.7"
+base64 = "0.13"
+bytes = "1"
+cfg-if = "1"
 diesel = { version = "1.4.3", default-features = false, features = ["r2d2", "sqlite"] }
-env_logger = "0.7"
+diesel_migrations = { version = "1", default-features = false, features = ["sqlite"] }
+env_logger = "0.9"
 futures = "0.3"
 hex = "0.4"
-hmac = "0.7"
+hmac = "0.11"
 http = "0.2"
-hyper = { version = "0.13", features = ["stream"] }
-hyper-tls = "0.4"
+http-body = "0.4.2"
+http-serde = "1"
+hyper = { version = "0.14", features = ["client", "http1", "http2", "server", "stream"] }
+hyper-tls = "0.5"
+itoa = "0.4"
 log = "0.4"
 mime = "0.3"
-rand = "0.7"
-rss = "1"
+pin-project = "1"
+rand = "0.8"
+rss = "2"
 serde = { version = "1", features = ["derive"] }
-serde_urlencoded = "0.6"
-sha-1 = "0.8"
+serde_urlencoded = "0.7"
+sha-1 = "0.9"
 string = { version = "0.2", default-features = false }
 structopt = "0.3"
-tokio = { version = "0.2", features = ["macros", "stream", "tcp", "time", "uds"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
+tokio-stream = { version = "0.1.2", features = ["net"] }
+tokio-test = "0.4"
+tower = { version = "0.4", default-features = false, features = ["util"] }
 tower-service = "0.3"
-libsqlite3-sys = { version = ">=0.8.0, <0.17.0", optional = true }
+libsqlite3-sys = { version = ">=0.8.0, <0.23.0", optional = true }
 
 [features]
 openssl-vendored = ["hyper-tls/vendored"]

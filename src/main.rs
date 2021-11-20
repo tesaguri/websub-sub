@@ -1,11 +1,17 @@
 #[macro_use]
 extern crate diesel;
+#[macro_use]
+extern crate diesel_migrations;
+
+mod util;
 
 mod cmd;
 mod common;
 mod feed;
+mod hub;
+mod migrations;
+mod query;
 mod schema;
-mod sub;
 mod subscriber;
 
 use structopt::StructOpt;
@@ -18,7 +24,7 @@ enum Cmd {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let cmd = Cmd::from_args();
