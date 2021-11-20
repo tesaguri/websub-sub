@@ -1,18 +1,5 @@
-#[macro_use]
-extern crate diesel;
-#[macro_use]
-extern crate diesel_migrations;
-
-mod util;
-
 mod cmd;
 mod common;
-mod feed;
-mod hub;
-mod migrations;
-mod query;
-mod schema;
-mod subscriber;
 
 use structopt::StructOpt;
 

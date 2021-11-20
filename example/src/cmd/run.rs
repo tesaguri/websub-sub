@@ -4,11 +4,11 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 
 use futures::{future, Stream, TryStreamExt};
-use http::Uri;
+use hyper::Uri;
 use structopt::StructOpt;
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 
-use crate::subscriber::Subscriber;
+use websub_sub::subscriber::Subscriber;
 
 #[derive(StructOpt)]
 pub struct Opt {
@@ -61,7 +61,7 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
 }
 
 async fn print_all(
-    s: impl Stream<Item = io::Result<(String, crate::feed::Feed)>>,
+    s: impl Stream<Item = io::Result<(String, websub_sub::feed::Feed)>>,
 ) -> io::Result<()> {
     let stdout = stdout();
     let mut stdout = stdout.lock();

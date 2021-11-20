@@ -1,11 +1,10 @@
 use diesel::prelude::*;
 use futures::future;
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
-use http::Uri;
+use hyper::Uri;
 use structopt::StructOpt;
-
-use crate::hub;
-use crate::schema::*;
+use websub_sub::hub;
+use websub_sub::schema::*;
 
 #[derive(StructOpt)]
 pub struct Opt {

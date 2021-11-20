@@ -1,7 +1,6 @@
-use http::Uri;
+use hyper::Uri;
 use structopt::StructOpt;
-
-use crate::hub;
+use websub_sub::hub;
 
 #[derive(StructOpt)]
 pub struct Opt {
