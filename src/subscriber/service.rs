@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::fmt::Debug;
 use std::future;
 use std::marker::PhantomData;
@@ -8,9 +7,6 @@ use std::task::{Context, Poll};
 
 use auto_enums::auto_enum;
 use bytes::Bytes;
-use diesel::dsl::*;
-use diesel::prelude::*;
-use diesel::r2d2::{ConnectionManager, Pool};
 use futures::channel::mpsc;
 use futures::{Future, FutureExt, TryFutureExt, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
@@ -22,58 +18,64 @@ use http_body::{Body, Full};
 use sha1::Sha1;
 use tower::ServiceExt;
 
+use crate::db::{Connection, Pool};
 use crate::feed::{self, Feed, RawFeed};
 use crate::hub;
-use crate::schema::*;
 use crate::util::{self, consts::HUB_SIGNATURE, now_unix, CollectBody, HttpService, Never};
+use crate::Error;
 
 use super::scheduler;
 
-pub struct Service<S, B> {
+pub struct Service<P, S, B> {
     pub(super) callback: Uri,
     pub(super) renewal_margin: u64,
     pub(super) client: S,
-    pub(super) pool: Pool<ConnectionManager<SqliteConnection>>,
+    pub(super) pool: P,
     pub(super) tx: mpsc::Sender<(String, Feed)>,
     pub(super) handle: scheduler::Handle,
     pub(super) _marker: PhantomData<fn() -> B>,
 }
 
-impl<S, B> Service<S, B>
+impl<P, S, B> Service<P, S, B>
 where
+    P: Pool,
+    <P::Connection as Connection>::TxConnection: 'static,
     S: HttpService<B> + Clone + Send + 'static,
     S::Future: Send,
     S::ResponseBody: Send,
-    B: From<Vec<u8>> + Send + 'static,
+    S::Error: Debug + Send,
+    B: Default + From<Vec<u8>> + Send + 'static,
 {
-    pub fn remove_dangling_subscriptions(&self) {
-        let dangling = subscriptions::table.filter(subscriptions::expires_at.is_null());
-        diesel::delete(dangling)
-            .execute(&*self.pool.get().unwrap())
-            .unwrap();
-    }
-
-    pub fn discover_and_subscribe(&self, topic: String) -> impl Future<Output = anyhow::Result<()>>
-    where
-        S::Error: Error + Send + Sync,
-        <S::ResponseBody as Body>::Error: Error + Send + Sync,
-        B: Default,
-    {
+    pub fn discover_and_subscribe(
+        &self,
+        topic: String,
+    ) -> impl Future<
+        Output = Result<
+            (),
+            Error<
+                P::Error,
+                <P::Connection as Connection>::Error,
+                S::Error,
+                <S::ResponseBody as Body>::Error,
+            >,
+        >,
+    > {
         let callback = self.callback.clone();
         let client = self.client.clone();
         let pool = self.pool.clone();
         self.discover(topic).map(|result| {
             result.and_then(move |(topic, hubs)| {
                 if let Some(hubs) = hubs {
-                    let conn = pool.get()?;
+                    let mut conn = try_pool!(pool.get());
                     for hub in hubs {
-                        tokio::spawn(hub::subscribe(
+                        let task = try_conn!(hub::subscribe(
                             &callback,
                             hub,
                             topic.clone(),
                             client.clone(),
-                            &*conn,
+                            &mut conn,
                         ));
+                        tokio::spawn(task);
                     }
                 }
                 Ok(())
@@ -85,10 +87,18 @@ where
     pub fn discover(
         &self,
         topic: String,
-    ) -> impl Future<Output = anyhow::Result<(String, Option<impl Iterator<Item = String>>)>>
+    ) -> impl Future<
+        Output = Result<
+            (String, Option<impl Iterator<Item = String>>),
+            Error<
+                P::Error,
+                <P::Connection as Connection>::Error,
+                S::Error,
+                <S::ResponseBody as Body>::Error,
+            >,
+        >,
+    >
     where
-        S::Error: Error + Send + Sync,
-        <S::ResponseBody as Body>::Error: Error + Send + Sync,
         B: Default,
     {
         log::info!("Attempting to discover WebSub hubs for topic {}", topic);
@@ -99,7 +109,7 @@ where
             .clone()
             .into_service()
             .oneshot(req)
-            .map_err(Into::into)
+            .map_err(Error::Service)
             .and_then(|res| async move {
                 // TODO: Web Linking discovery
 
@@ -114,7 +124,7 @@ where
                     feed::MediaType::Xml
                 };
 
-                let body = CollectBody::new(res.into_body()).await?;
+                let body = try_body!(CollectBody::new(res.into_body()).await);
 
                 if let Some(mut feed) = RawFeed::parse(kind, &body) {
                     #[auto_enum(Iterator)]
@@ -142,30 +152,30 @@ where
             })
     }
 
-    pub fn subscribe(
+    pub fn subscribe<C>(
         &self,
         hub: String,
         topic: String,
-        conn: &SqliteConnection,
-    ) -> impl Future<Output = Result<(), S::Error>> {
+        conn: &mut C,
+    ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
+    where
+        C: Connection<Error = <P::Connection as Connection>::Error>,
+    {
         hub::subscribe(&self.callback, hub, topic, self.client.clone(), conn)
     }
 
-    pub fn renew_subscriptions(&self, conn: &SqliteConnection)
+    pub fn renew_subscriptions<C>(&self, conn: &mut C) -> Result<(), C::Error>
     where
-        S::Error: Debug,
+        C: Connection<Error = <P::Connection as Connection>::Error>,
+        C::TxConnection: 'static,
     {
         let now_unix = now_unix();
         let threshold: i64 = (now_unix.as_secs() + self.renewal_margin + 1)
             .try_into()
             .unwrap();
 
-        let expiring_rows = subscriptions::table.filter(subscriptions::expires_at.le(threshold));
-
-        conn.transaction::<_, diesel::result::Error, _>(|| {
-            let expiring = expiring_rows
-                .select((subscriptions::id, subscriptions::hub, subscriptions::topic))
-                .load::<(i64, String, String)>(conn)?;
+        conn.transaction(|conn| {
+            let expiring = conn.get_subscriptions_expire_before(threshold)?;
 
             if expiring.is_empty() {
                 return Ok(());
@@ -180,37 +190,49 @@ where
                     hub,
                     id
                 );
-                tokio::spawn(self.subscribe(hub, topic, conn).map(log_and_discard_error));
+                tokio::spawn(self.subscribe(hub, topic, conn)?.map(log_and_discard_error));
             }
 
-            diesel::update(expiring_rows)
-                .set(subscriptions::expires_at.eq(None::<i64>))
-                .execute(conn)?;
+            conn.deactivate_subscriptions_expire_before(threshold)?;
 
             Ok(())
         })
-        .unwrap();
     }
+}
 
-    pub fn unsubscribe_all(
+impl<P, S, B> Service<P, S, B>
+where
+    P: Pool,
+    S: HttpService<B> + Clone + Send + 'static,
+    S::Error: Debug,
+    S::Future: Send,
+    B: From<Vec<u8>> + Send + 'static,
+{
+    fn unsubscribe<C>(
         &self,
-        topic: String,
-        conn: &SqliteConnection,
-    ) -> impl Iterator<Item = impl Future<Output = Result<(), S::Error>>> {
-        hub::unsubscribe_all(&self.callback, topic, self.client.clone(), conn)
-    }
-
-    fn unsubscribe(
-        &self,
-        id: i64,
+        id: u64,
         hub: String,
         topic: String,
-        conn: &SqliteConnection,
-    ) -> impl Future<Output = Result<(), S::Error>> {
+        conn: &mut C,
+    ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
+    where
+        C: Connection<Error = <P::Connection as Connection>::Error>,
+    {
         hub::unsubscribe(&self.callback, id, hub, topic, self.client.clone(), conn)
     }
 
-    fn call(&self, req: Request<hyper::Body>) -> Response<Full<Bytes>>
+    fn call(
+        &self,
+        req: Request<hyper::Body>,
+    ) -> Result<
+        Response<Full<Bytes>>,
+        Error<
+            P::Error,
+            <P::Connection as Connection>::Error,
+            S::Error,
+            <S::ResponseBody as Body>::Error,
+        >,
+    >
     where
         S::Error: Debug,
     {
@@ -219,10 +241,10 @@ where
                 match $input {
                     Ok(x) => x,
                     Err(_) => {
-                        return Response::builder()
+                        return Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
                             .body(Full::default())
-                            .unwrap();
+                            .unwrap());
                     }
                 }
             };
@@ -230,19 +252,20 @@ where
 
         let path = req.uri().path();
         let id = if let Some(id) = path.strip_prefix(self.callback.path()) {
-            let id = validate!(crate::util::callback_id::decode(id).ok_or(()));
-            validate!(i64::try_from(id))
+            validate!(crate::util::callback_id::decode(id).ok_or(()))
         } else {
-            return Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Full::default())
-                .unwrap();
+                .unwrap());
         };
 
-        let conn = self.pool.get().unwrap();
+        let mut conn = try_pool!(self.pool.get());
 
         if let Some(q) = req.uri().query() {
-            return self.verify_intent(id, q, &conn);
+            return self
+                .verify_intent(id, q, &mut conn)
+                .map_err(Error::Connection);
         }
 
         let kind: feed::MediaType = if let Some(m) = req
@@ -253,10 +276,10 @@ where
         {
             m
         } else {
-            return Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
                 .body(Full::default())
-                .unwrap();
+                .unwrap());
         };
 
         let hub_signature = HeaderName::from_static(HUB_SIGNATURE);
@@ -264,7 +287,7 @@ where
             v.as_bytes()
         } else {
             log::debug!("Callback {}: missing signature", id);
-            return Response::new(Full::default());
+            return Ok(Response::new(Full::default()));
         };
 
         let pos = signature_header.iter().position(|&b| b == b'=');
@@ -273,10 +296,10 @@ where
             (method, &hex[1..])
         } else {
             log::debug!("Callback {}: malformed signature", id);
-            return Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(Full::default())
-                .unwrap();
+                .unwrap());
         };
 
         let signature = match method {
@@ -289,29 +312,24 @@ where
             _ => {
                 let method = String::from_utf8_lossy(method);
                 log::debug!("Callback {}: unknown digest algorithm: {}", id, method);
-                return Response::builder()
+                return Ok(Response::builder()
                     .status(StatusCode::NOT_ACCEPTABLE)
                     .body(Full::default())
-                    .unwrap();
+                    .unwrap());
             }
         };
 
         let (topic, mac) = {
-            let cols = subscriptions::table
-                .select((subscriptions::topic, subscriptions::secret))
-                .find(id)
-                .get_result::<(String, String)>(&conn)
-                .optional()
-                .unwrap();
+            let cols = try_conn!(conn.get_topic(id));
             let (topic, secret) = if let Some(cols) = cols {
                 cols
             } else {
                 // Return HTTP 410 code to let the hub end the subscription if the ID is of
                 // a previously removed subscription.
-                return Response::builder()
+                return Ok(Response::builder()
                     .status(StatusCode::GONE)
                     .body(Full::default())
-                    .unwrap();
+                    .unwrap());
             };
             let mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).unwrap();
             (topic, mac)
@@ -345,32 +363,26 @@ where
             .map(|_| ());
         tokio::spawn(verify_signature);
 
-        Response::new(Full::default())
+        Ok(Response::new(Full::default()))
     }
 
-    fn verify_intent(&self, id: i64, query: &str, conn: &SqliteConnection) -> Response<Full<Bytes>>
+    fn verify_intent<C>(
+        &self,
+        id: u64,
+        query: &str,
+        conn: &mut C,
+    ) -> Result<Response<Full<Bytes>>, C::Error>
     where
-        S::Error: Debug,
+        C: Connection<Error = <P::Connection as Connection>::Error>,
+        C::TxConnection: 'static,
     {
-        let row = |topic| {
-            subscriptions::table
-                .filter(subscriptions::id.eq(id))
-                .filter(subscriptions::topic.eq(topic))
-        };
-
         match serde_urlencoded::from_str::<hub::Verify<String>>(query) {
             Ok(hub::Verify::Subscribe {
                 topic,
                 challenge,
                 lease_seconds,
             }) => {
-                if let Some(hub) = row(&topic)
-                    .filter(subscriptions::expires_at.is_null())
-                    .select(subscriptions::hub)
-                    .get_result::<String>(conn)
-                    .optional()
-                    .unwrap()
-                {
+                if let Some(hub) = conn.get_hub_of_inactive_subscription(id, &topic)? {
                     log::info!("Verifying subscription {}", id);
 
                     let now_unix = now_unix();
@@ -382,66 +394,60 @@ where
 
                     self.handle.hasten(self.refresh_time(expires_at as u64));
 
-                    conn.transaction::<_, diesel::result::Error, _>(|| {
+                    conn.transaction(|conn| {
                         // Remove old subscriptions if any.
-                        let old = subscriptions::table
-                            .filter(subscriptions::topic.eq(&topic))
-                            .filter(subscriptions::hub.eq(&hub))
-                            .filter(not(subscriptions::id.eq(id)))
-                            .select(subscriptions::id);
-                        for id in old.load(conn)? {
+                        for id in conn.get_old_subscriptions(id, &hub, &topic)? {
                             log::info!("Removing the old subscription");
                             let task = self
-                                .unsubscribe(id, hub.clone(), topic.clone(), conn)
+                                .unsubscribe(id as u64, hub.clone(), topic.clone(), conn)?
                                 .map(log_and_discard_error);
                             tokio::spawn(task);
                         }
 
-                        update(subscriptions::table.find(id))
-                            .set(subscriptions::expires_at.eq(expires_at))
-                            .execute(conn)
-                            .unwrap();
+                        conn.activate_subscription(id, expires_at)?;
                         Ok(())
-                    })
-                    .unwrap();
+                    })?;
 
-                    return Response::new(challenge.into());
+                    return Ok(Response::new(challenge.into()));
                 }
             }
             Ok(hub::Verify::Unsubscribe { topic, challenge })
-                if select(not(exists(row(&topic)))).get_result(conn).unwrap() =>
+                if !conn.subscription_exists(id, &topic)? =>
             {
                 log::info!("Vefirying unsubscription of {}", id);
-                return Response::new(challenge.into());
+                return Ok(Response::new(challenge.into()));
             }
             _ => {}
         }
 
-        Response::builder()
+        Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Full::default())
-            .unwrap()
+            .unwrap())
     }
 }
 
-impl<S, B> Service<S, B> {
+impl<P, S, B> Service<P, S, B> {
     pub fn refresh_time(&self, expires_at: u64) -> u64 {
         expires_at - self.renewal_margin
     }
 }
 
-impl<S, B> AsRef<scheduler::Handle> for Service<S, B> {
+impl<P, S, B> AsRef<scheduler::Handle> for Service<P, S, B> {
     fn as_ref(&self) -> &scheduler::Handle {
         &self.handle
     }
 }
 
-impl<S, B> tower_service::Service<Request<hyper::Body>> for &Service<S, B>
+impl<P, S, B> tower_service::Service<Request<hyper::Body>> for &Service<P, S, B>
 where
+    P: Pool,
+    P::Error: Debug,
+    <P::Connection as Connection>::Error: Debug,
     S: HttpService<B> + Clone + Send + 'static,
+    <S::ResponseBody as Body>::Error: Debug,
     S::Error: Debug,
     S::Future: Send,
-    S::ResponseBody: Send,
     B: From<Vec<u8>> + Send + 'static,
 {
     type Response = Response<Full<Bytes>>;
@@ -454,7 +460,16 @@ where
 
     fn call(&mut self, req: Request<hyper::Body>) -> Self::Future {
         log::trace!("Service::call; req.uri()={:?}", req.uri());
-        future::ready(Ok((*self).call(req)))
+        match (*self).call(req) {
+            Ok(ret) => future::ready(Ok(ret)),
+            Err(e) => {
+                log::error!("error while serving an HTTP request: {:?}", e);
+                future::ready(Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::default())
+                    .unwrap()))
+            }
+        }
     }
 }
 

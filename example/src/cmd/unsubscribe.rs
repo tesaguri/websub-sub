@@ -3,6 +3,8 @@ use futures::future;
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use hyper::Uri;
 use structopt::StructOpt;
+use websub_sub::db::diesel1::Connection;
+use websub_sub::db::Connection as _;
 use websub_sub::hub;
 use websub_sub::schema::*;
 
@@ -15,37 +17,53 @@ pub struct Opt {
 
 pub async fn main(opt: Opt) -> anyhow::Result<()> {
     let client = crate::common::http_client();
-    let conn = crate::common::open_database()?;
+    let mut conn = Connection::new(crate::common::open_database()?);
 
-    let tasks = if let Some(hub) = opt.hub {
-        conn.transaction::<_, diesel::result::Error, _>(|| {
+    let tasks: FuturesUnordered<_> = if let Some(hub) = opt.hub {
+        conn.transaction(|conn| {
             let ids = subscriptions::table
                 .filter(subscriptions::hub.eq(&hub))
                 .filter(subscriptions::topic.eq(&opt.topic))
                 .select(subscriptions::id)
-                .load(&conn)?;
-            let task = ids
-                .into_iter()
+                .load::<i64>(&**conn)?;
+            ids.into_iter()
                 .map(|id| {
-                    tokio::spawn(hub::unsubscribe(
+                    hub::unsubscribe(
                         &opt.callback,
-                        id,
+                        id as u64,
                         hub.clone(),
                         opt.topic.clone(),
                         client.clone(),
-                        &conn,
-                    ))
+                        conn,
+                    )
+                    .map(tokio::spawn)
                 })
-                .collect::<FuturesUnordered<_>>();
-            Ok(task)
+                .collect()
         })?
     } else {
-        hub::unsubscribe_all(&opt.callback, opt.topic, client, &conn)
-            .map(tokio::spawn)
-            .collect::<FuturesUnordered<_>>()
+        conn.transaction(|conn| {
+            let subscriptions = subscriptions::table
+                .filter(subscriptions::topic.eq(&opt.topic))
+                .select((subscriptions::id, subscriptions::hub))
+                .load::<(i64, String)>(&**conn)?;
+            subscriptions
+                .into_iter()
+                .map(|(id, hub)| {
+                    hub::unsubscribe(
+                        &opt.callback,
+                        id as u64,
+                        hub,
+                        opt.topic.clone(),
+                        client.clone(),
+                        conn,
+                    )
+                    .map(tokio::spawn)
+                })
+                .collect()
+        })?
     };
     tasks
-        .map(|result| result.unwrap())
+        .map(Result::unwrap)
         .try_for_each(|()| future::ok(()))
         .await?;
 

@@ -1,5 +1,6 @@
 use hyper::Uri;
 use structopt::StructOpt;
+use websub_sub::db::diesel1::Connection;
 use websub_sub::hub;
 
 #[derive(StructOpt)]
@@ -11,9 +12,9 @@ pub struct Opt {
 
 pub async fn main(opt: Opt) -> anyhow::Result<()> {
     let client = crate::common::http_client();
-    let conn = crate::common::open_database()?;
+    let mut conn = Connection::new(crate::common::open_database()?);
 
-    hub::subscribe(&opt.callback, opt.hub, opt.topic, &client, &conn).await?;
+    hub::subscribe(&opt.callback, opt.hub, opt.topic, &client, &mut conn)?.await?;
 
     Ok(())
 }

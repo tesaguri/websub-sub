@@ -1,3 +1,30 @@
+macro_rules! try_pool {
+    ($result:expr $(,)?) => {
+        match $result {
+            Ok(x) => x,
+            Err(e) => return Err($crate::Error::Pool(e)),
+        }
+    };
+}
+
+macro_rules! try_conn {
+    ($result:expr $(,)?) => {
+        match $result {
+            Ok(x) => x,
+            Err(e) => return Err($crate::Error::Connection(e)),
+        }
+    };
+}
+
+macro_rules! try_body {
+    ($result:expr $(,)?) => {
+        match $result {
+            Ok(x) => x,
+            Err(e) => return Err($crate::Error::Body(e)),
+        }
+    };
+}
+
 mod scheduler;
 mod service;
 
@@ -8,38 +35,42 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use diesel::prelude::*;
-use diesel::r2d2::{ConnectionManager, Pool};
 use futures::channel::mpsc;
 use futures::{Stream, StreamExt, TryStream};
 use http::uri::{PathAndQuery, Uri};
+use http_body::Body;
 use hyper::server::conn::Http;
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::db::{Connection, Pool};
 use crate::feed::Feed;
-use crate::schema::*;
 use crate::util::{ArcService, HttpService};
+use crate::Error;
 
 use self::scheduler::Scheduler;
 use self::service::Service;
 
 /// A WebSub subscriber server.
 #[pin_project]
-pub struct Subscriber<S, B, I> {
+pub struct Subscriber<P, S, B, I> {
     #[pin]
     incoming: I,
     server: Http,
     rx: mpsc::Receiver<(String, Feed)>,
-    service: Arc<Service<S, B>>,
+    service: Arc<Service<P, S, B>>,
 }
 
-impl<S, B, I> Subscriber<S, B, I>
+impl<P, S, B, I> Subscriber<P, S, B, I>
 where
+    P: Pool,
+    P::Error: Debug,
+    <P::Connection as Connection>::Error: Debug,
     S: HttpService<B> + Clone + Send + Sync + 'static,
-    S::Error: Debug,
+    S::Error: Debug + Send,
     S::Future: Send,
     S::ResponseBody: Send,
+    <S::ResponseBody as Body>::Error: Debug,
     B: Default + From<Vec<u8>> + Send + 'static,
     I: TryStream,
     I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -48,8 +79,16 @@ where
         incoming: I,
         callback: Uri,
         client: S,
-        pool: Pool<ConnectionManager<SqliteConnection>>,
-    ) -> Self {
+        pool: P,
+    ) -> Result<
+        Self,
+        Error<
+            P::Error,
+            <P::Connection as Connection>::Error,
+            S::Error,
+            <S::ResponseBody as Body>::Error,
+        >,
+    > {
         Self::with_margin(Duration::from_secs(3600), incoming, callback, client, pool)
     }
 
@@ -58,23 +97,21 @@ where
         incoming: I,
         callback: Uri,
         client: S,
-        pool: Pool<ConnectionManager<SqliteConnection>>,
-    ) -> Self {
+        pool: P,
+    ) -> Result<
+        Self,
+        Error<
+            P::Error,
+            <P::Connection as Connection>::Error,
+            S::Error,
+            <S::ResponseBody as Body>::Error,
+        >,
+    > {
         let renewal_margin = renewal_margin.as_secs();
 
-        let expires_at = subscriptions::table
-            .select(subscriptions::expires_at)
-            .filter(subscriptions::expires_at.is_not_null())
-            .order(subscriptions::expires_at.asc());
-
-        let first_tick = expires_at
-            .first::<Option<i64>>(&pool.get().unwrap())
-            .optional()
-            .unwrap()
-            .flatten()
-            .map(|expires_at| {
-                u64::try_from(expires_at).map_or(0, |expires_at| expires_at - renewal_margin)
-            });
+        let first_tick = try_conn!(try_pool!(pool.get()).get_next_expiry()).map(|expires_at| {
+            u64::try_from(expires_at).map_or(0, |expires_at| expires_at - renewal_margin)
+        });
 
         let callback = prepare_callback_prefix(callback);
 
@@ -91,26 +128,21 @@ where
         });
 
         tokio::spawn(Scheduler::new(&service, move |service| {
-            let conn = &*service.pool.get().unwrap();
-            service.renew_subscriptions(conn);
-            expires_at
-                .first::<Option<i64>>(conn)
-                .optional()
-                .unwrap()
-                .flatten()
-                .map(|expires_at| {
-                    expires_at
-                        .try_into()
-                        .map_or(0, |expires_at| service.refresh_time(expires_at))
-                })
+            let mut conn = service.pool.get().unwrap();
+            service.renew_subscriptions(&mut conn).unwrap();
+            conn.get_next_expiry().unwrap().map(|expires_at| {
+                expires_at
+                    .try_into()
+                    .map_or(0, |expires_at| service.refresh_time(expires_at))
+            })
         }));
 
-        Subscriber {
+        Ok(Subscriber {
             incoming,
             server: Http::new(),
             rx,
             service,
-        }
+        })
     }
 
     fn accept_all(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), I::Error>> {
@@ -130,12 +162,16 @@ where
 }
 
 /// The `Stream` impl yields topic updates that the server has received.
-impl<S, B, I> Stream for Subscriber<S, B, I>
+impl<P, S, B, I> Stream for Subscriber<P, S, B, I>
 where
+    P: Pool,
+    P::Error: Debug,
+    <P::Connection as Connection>::Error: Debug,
     S: HttpService<B> + Clone + Send + Sync + 'static,
-    S::Error: Debug,
+    S::Error: Debug + Send,
     S::Future: Send,
     S::ResponseBody: Send,
+    <S::ResponseBody as Body>::Error: Debug,
     B: Default + From<Vec<u8>> + Send + 'static,
     I: TryStream,
     I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -180,15 +216,18 @@ fn prepare_callback_prefix(prefix: Uri) -> Uri {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "diesel1"))]
 mod tests {
     use std::convert::Infallible;
+    use std::io;
     use std::str;
     use std::time::Duration;
 
     use bytes::Bytes;
     use diesel::dsl::*;
+    use diesel::prelude::*;
     use diesel::r2d2::ConnectionManager;
+    use diesel::SqliteConnection;
     use futures::channel::oneshot;
     use futures::future;
     use hmac::{Hmac, Mac, NewMac};
@@ -200,8 +239,10 @@ mod tests {
     use hyper::{service, Client};
     use sha1::Sha1;
 
+    use crate::db::Pool;
     use crate::feed;
     use crate::hub;
+    use crate::schema::*;
     use crate::util::connection::{Connector, Listener};
     use crate::util::consts::{
         APPLICATION_ATOM_XML, APPLICATION_WWW_FORM_URLENCODED, HUB_SIGNATURE,
@@ -242,12 +283,12 @@ mod tests {
 
         let begin = i64::try_from(util::now_unix().as_secs()).unwrap();
 
-        let pool = Pool::builder()
+        let pool = diesel::r2d2::Pool::builder()
             .max_size(1)
-            .build(ConnectionManager::new(":memory:"))
+            .build(ConnectionManager::<SqliteConnection>::new(":memory:"))
             .unwrap();
         let conn = pool.get().unwrap();
-        crate::migrations::run(&*conn).unwrap();
+        run_migrations(&*conn);
 
         let expiry1 = begin + MARGIN.as_secs() as i64 + 1;
         let expiry2 = expiry1 + MARGIN.as_secs() as i64;
@@ -272,7 +313,8 @@ mod tests {
 
         drop(conn);
 
-        let (mut subscriber, client, listener) = prepare_subscriber_with_pool(pool);
+        let (mut subscriber, client, listener) =
+            prepare_subscriber_with_pool(crate::db::diesel1::Pool::from(pool));
         let mut listener = tokio_test::task::spawn(listener);
 
         let hub = Http::new();
@@ -447,11 +489,14 @@ mod tests {
 
         // Subscribe to the topic.
 
-        let req_task = subscriber.service.subscribe(
-            HUB.to_owned(),
-            topic,
-            &subscriber.service.pool.get().unwrap(),
-        );
+        let req_task = subscriber
+            .service
+            .subscribe(
+                HUB.to_owned(),
+                topic,
+                &mut subscriber.service.pool.get().unwrap(),
+            )
+            .unwrap();
         tokio::time::advance(DELAY).await;
         let accept_task = accept_request(&mut listener, &hub, "/hub");
         let (result, form) = future::join(req_task, accept_task).timeout().await;
@@ -578,26 +623,38 @@ mod tests {
         let conn = subscriber.service.pool.get().unwrap();
 
         let row = subscriptions::table.find(id);
-        assert!(!select(exists(row)).get_result::<bool>(&conn).unwrap());
+        assert!(!select(exists(row))
+            .get_result::<bool>(conn.as_ref())
+            .unwrap());
     }
 
     fn prepare_subscriber() -> (
-        Subscriber<Client<Connector, Full<Bytes>>, Full<Bytes>, Listener>,
+        Subscriber<
+            crate::db::diesel1::Pool<ConnectionManager<SqliteConnection>>,
+            Client<Connector, Full<Bytes>>,
+            Full<Bytes>,
+            Listener,
+        >,
         Client<Connector, Full<Bytes>>,
         Listener,
     ) {
-        let pool = Pool::builder()
+        let pool = diesel::r2d2::Pool::builder()
             .max_size(1)
             .build(ConnectionManager::new(":memory:"))
             .unwrap();
-        crate::migrations::run(&*pool.get().unwrap()).unwrap();
-        prepare_subscriber_with_pool(pool)
+        run_migrations(&*pool.get().unwrap());
+        prepare_subscriber_with_pool(crate::db::diesel1::Pool::from(pool))
     }
 
     fn prepare_subscriber_with_pool(
-        pool: Pool<ConnectionManager<SqliteConnection>>,
+        pool: crate::db::diesel1::Pool<ConnectionManager<SqliteConnection>>,
     ) -> (
-        Subscriber<Client<Connector, Full<Bytes>>, Full<Bytes>, Listener>,
+        Subscriber<
+            crate::db::diesel1::Pool<ConnectionManager<SqliteConnection>>,
+            Client<Connector, Full<Bytes>>,
+            Full<Bytes>,
+            Listener,
+        >,
         Client<Connector, Full<Bytes>>,
         Listener,
     ) {
@@ -619,9 +676,25 @@ mod tests {
             Uri::from_static("http://example.com/"),
             sub_client,
             pool,
-        );
+        )
+        .unwrap();
 
         (subscriber, hub_client, hub_listener)
+    }
+
+    // XXX: This could be written much shorter with
+    // `diesel_migrations::run_pending_migrations_in_directory` but it is `#[doc(hidden)]`.
+    fn run_migrations(conn: &SqliteConnection) {
+        let dir = diesel_migrations::find_migrations_directory().unwrap();
+        let migrations = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter_map(|e| {
+                (!e.file_name().to_string_lossy().starts_with('.'))
+                    .then(|| diesel_migrations::migration_from(e.path()).unwrap())
+            })
+            .collect::<Vec<_>>();
+        diesel_migrations::run_migrations(conn, migrations, &mut io::sink()).unwrap();
     }
 
     async fn accept_request<'a>(

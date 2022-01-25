@@ -25,14 +25,14 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
         if let Some(addr) = bind.strip_prefix("tcp://") {
             let addr: SocketAddr = addr.parse()?;
             let listener = TcpListenerStream::new(tokio::net::TcpListener::bind(addr).await?);
-            let subscriber = Subscriber::new(listener, opt.callback, client, pool);
+            let subscriber = Subscriber::new(listener, opt.callback, client, pool)?;
             print_all(subscriber).await?;
         } else if let Some(path) = bind.strip_prefix("unix://") {
             let path = Path::new(path);
             let _ = fs::remove_file(path);
             let listener = UnixListenerStream::new(tokio::net::UnixListener::bind(path)?);
             _guard = crate::common::RmGuard(path);
-            let subscriber = Subscriber::new(listener, opt.callback, client, pool);
+            let subscriber = Subscriber::new(listener, opt.callback, client, pool)?;
             print_all(subscriber).await?;
         } else {
             panic!("unknown bind address type");
@@ -53,7 +53,7 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
             .next()
             .unwrap();
         let listener = TcpListenerStream::new(tokio::net::TcpListener::bind(addr).await?);
-        let subscriber = Subscriber::new(listener, opt.callback, client, pool);
+        let subscriber = Subscriber::new(listener, opt.callback, client, pool)?;
         print_all(subscriber).await?;
     }
 

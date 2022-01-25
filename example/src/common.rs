@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use diesel::connection::{Connection, SimpleConnection};
-use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool};
+use diesel::r2d2::{ConnectionManager, CustomizeConnection};
 use diesel::SqliteConnection;
 use hyper::client::{Client, HttpConnector};
 use hyper_tls::HttpsConnector;
@@ -32,11 +32,12 @@ pub fn open_database() -> anyhow::Result<SqliteConnection> {
     Ok(conn)
 }
 
-pub fn database_pool() -> anyhow::Result<Pool<ConnectionManager<SqliteConnection>>> {
-    let ret = Pool::builder()
+pub fn database_pool(
+) -> anyhow::Result<websub_sub::db::diesel1::Pool<ConnectionManager<SqliteConnection>>> {
+    let ret = diesel::r2d2::Pool::builder()
         .connection_customizer(Box::new(ConnectionCustomizer))
         .build(ConnectionManager::new(DB_URL))?;
-    Ok(ret)
+    Ok(ret.into())
 }
 
 pub fn http_client() -> Client<HttpsConnector<HttpConnector>> {

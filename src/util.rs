@@ -32,7 +32,7 @@ pub mod consts {
     #[allow(clippy::declare_interior_mutable_const)]
     pub const APPLICATION_WWW_FORM_URLENCODED: HeaderValue =
         HeaderValue::from_static("application/x-www-form-urlencoded");
-    #[cfg(test)]
+    #[cfg(all(test, feature = "diesel1"))]
     #[allow(clippy::declare_interior_mutable_const)]
     pub const APPLICATION_ATOM_XML: HeaderValue = HeaderValue::from_static("application/atom+xml");
     pub const HUB_SIGNATURE: &str = "x-hub-signature";
@@ -41,13 +41,13 @@ pub mod consts {
 }
 
 pub mod callback_id;
-#[cfg(test)]
+#[cfg(all(test, feature = "diesel1"))]
 pub mod connection;
 pub mod http_service;
 pub mod time;
 
 mod collect_body;
-#[cfg(test)]
+#[cfg(all(test, feature = "diesel1"))]
 mod first;
 
 use std::error::Error;
@@ -66,13 +66,13 @@ use serde::{de, Deserialize};
 use tokio::io::ReadBuf;
 
 pub use self::collect_body::CollectBody;
-#[cfg(test)]
+#[cfg(all(test, feature = "diesel1"))]
 pub use self::connection::connection;
-#[cfg(test)]
+#[cfg(all(test, feature = "diesel1"))]
 pub use self::first::{first, First};
 pub use self::http_service::HttpService;
 pub use self::time::{instant_from_unix, instant_now, now_unix, system_time_now};
-#[cfg(test)]
+#[cfg(all(test, feature = "diesel1"))]
 pub use self::time::{FutureTimeoutExt, Sleep};
 
 pub struct ArcService<S>(pub Arc<S>);

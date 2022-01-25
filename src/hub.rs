@@ -1,8 +1,5 @@
 use std::str;
 
-use diesel::prelude::*;
-use diesel::result::DatabaseErrorKind;
-use diesel::SqliteConnection;
 use futures::{Future, TryFutureExt};
 use http::header::{CONTENT_TYPE, LOCATION};
 use http::uri::{Parts, PathAndQuery, Uri};
@@ -10,7 +7,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 
-use crate::schema::*;
+use crate::db::Connection;
 use crate::util;
 use crate::util::consts::APPLICATION_WWW_FORM_URLENCODED;
 use crate::util::HttpService;
@@ -61,18 +58,22 @@ pub enum Verify<S = String> {
 const SECRET_LEN: usize = 32;
 type Secret = string::String<[u8; SECRET_LEN]>;
 
-pub fn subscribe<S, B>(
+pub fn subscribe<C, S, B>(
     callback: &Uri,
     hub: String,
     topic: String,
     client: S,
-    conn: &SqliteConnection,
-) -> impl Future<Output = Result<(), S::Error>>
+    conn: &mut C,
+) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
 where
+    C: Connection,
     S: HttpService<B>,
     B: From<Vec<u8>>,
 {
-    let (id, secret) = create_subscription(&hub, &topic, conn);
+    let (id, secret) = match create_subscription(&hub, &topic, conn) {
+        Ok((id, secret)) => (id as u64, secret),
+        Err(e) => return Err(e),
+    };
 
     log::info!("Subscribing to topic {} at hub {} ({})", topic, hub, id);
 
@@ -83,26 +84,25 @@ where
     })
     .unwrap();
 
-    send_request(hub, topic, body, client)
+    Ok(send_request(hub, topic, body, client))
 }
 
-pub fn unsubscribe<S, B>(
+pub fn unsubscribe<C, S, B>(
     callback: &Uri,
-    id: i64,
+    id: u64,
     hub: String,
     topic: String,
     client: S,
-    conn: &SqliteConnection,
-) -> impl Future<Output = Result<(), S::Error>>
+    conn: &mut C,
+) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
 where
+    C: Connection,
     S: HttpService<B>,
     B: From<Vec<u8>>,
 {
     log::info!("Unsubscribing from topic {} at hub {} ({})", topic, hub, id);
 
-    diesel::delete(subscriptions::table.find(id))
-        .execute(conn)
-        .unwrap();
+    conn.delete_subscriptions(id)?;
 
     let callback = make_callback(callback.clone(), id);
     let body = serde_urlencoded::to_string(Form::Unsubscribe {
@@ -110,39 +110,8 @@ where
         topic: &topic,
     })
     .unwrap();
-    send_request(hub, topic, body, client)
-}
 
-pub fn unsubscribe_all<S, B>(
-    callback: &Uri,
-    topic: String,
-    client: S,
-    conn: &SqliteConnection,
-) -> impl Iterator<Item = impl Future<Output = Result<(), S::Error>>>
-where
-    S: HttpService<B> + Clone,
-    B: From<Vec<u8>>,
-{
-    log::info!("Unsubscribing from topic {} at all hubs", topic);
-
-    let rows = subscriptions::table.filter(subscriptions::topic.eq(&topic));
-    let subscriptions = rows
-        .select((subscriptions::id, subscriptions::hub))
-        .load::<(i64, String)>(conn)
-        .unwrap();
-
-    diesel::delete(rows).execute(conn).unwrap();
-
-    let callback = callback.clone();
-    subscriptions.into_iter().map(move |(id, hub)| {
-        let callback = make_callback(callback.clone(), id);
-        let body = serde_urlencoded::to_string(Form::Unsubscribe {
-            callback,
-            topic: &topic,
-        })
-        .unwrap();
-        send_request(hub, topic.clone(), body, client.clone())
-    })
+    Ok(send_request(hub, topic, body, client))
 }
 
 fn send_request<S, B>(
@@ -184,41 +153,19 @@ where
     })
 }
 
-fn create_subscription(hub: &str, topic: &str, conn: &SqliteConnection) -> (i64, Secret) {
+fn create_subscription<C>(hub: &str, topic: &str, conn: &mut C) -> Result<(u64, Secret), C::Error>
+where
+    C: Connection,
+{
     let mut rng = rand::thread_rng();
 
     let secret = gen_secret(&mut rng);
+    let id = conn.create_subscription(hub, topic, &secret)?;
 
-    let id = conn
-        .transaction(|| {
-            let id = loop {
-                let id = (rng.next_u64() >> 1) as i64;
-                let result = diesel::insert_into(subscriptions::table)
-                    .values((
-                        subscriptions::id.eq(id),
-                        subscriptions::hub.eq(hub),
-                        subscriptions::topic.eq(topic),
-                        subscriptions::secret.eq(&*secret),
-                    ))
-                    .execute(conn);
-                match result {
-                    Ok(_) => break id,
-                    Err(diesel::result::Error::DatabaseError(
-                        DatabaseErrorKind::UniqueViolation,
-                        _,
-                    )) => {} // retry
-                    Err(e) => return Err(e),
-                }
-            };
-
-            Ok(id)
-        })
-        .unwrap();
-
-    (id, secret)
+    Ok((id, secret))
 }
 
-fn make_callback(prefix: Uri, id: i64) -> Uri {
+fn make_callback(prefix: Uri, id: u64) -> Uri {
     let id = id.to_le_bytes();
     let id = util::callback_id::encode(&id);
     let mut parts = Parts::from(prefix);

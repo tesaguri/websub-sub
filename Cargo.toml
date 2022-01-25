@@ -16,14 +16,11 @@ keywords = ["websub", "pubsubhubbub"]
 categories = ["web-programming"]
 
 [dependencies]
-anyhow = "1"
 atom = { version = "0.11", package = "atom_syndication" }
 auto_enums = "0.7"
 base64 = "0.13"
 bytes = "1"
 cfg-if = "1"
-diesel = { version = "1.4.3", default-features = false, features = ["r2d2", "sqlite"] }
-diesel_migrations = { version = "1", default-features = false, features = ["sqlite"] }
 futures = "0.3"
 hex = "0.4"
 hmac = "0.11"
@@ -41,10 +38,20 @@ serde_urlencoded = "0.7"
 sha-1 = "0.9"
 string = { version = "0.2", default-features = false }
 structopt = "0.3"
+thiserror = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-test = "0.4"
 tower = { version = "0.4", default-features = false, features = ["util"] }
 tower-service = "0.3"
 
+# `diesel1` feature
+diesel = { version = "1.4.3", default-features = false, optional = true }
+
+[features]
+diesel1 = ["diesel/r2d2"]
+
 [dev-dependencies]
+anyhow = "1"
+diesel = { version = "1.4.3", default-features = false, features = ["sqlite"] }
+diesel_migrations = { version = "1", default-features = false, features = ["sqlite"] }
 hyper = { version = "0.14", features = ["client", "tcp"] }
