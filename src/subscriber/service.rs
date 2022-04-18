@@ -39,7 +39,7 @@ pub struct Service<P, S, B> {
 impl<P, S, B> Service<P, S, B>
 where
     P: Pool,
-    <P::Connection as Connection>::TxConnection: 'static,
+    P::Connection: 'static,
     S: HttpService<B> + Clone + Send + 'static,
     S::Future: Send,
     S::ResponseBody: Send,
@@ -156,7 +156,7 @@ where
         &self,
         hub: String,
         topic: String,
-        conn: &mut C,
+        conn: &C,
     ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error>,
@@ -164,17 +164,16 @@ where
         hub::subscribe(&self.callback, hub, topic, self.client.clone(), conn)
     }
 
-    pub fn renew_subscriptions<C>(&self, conn: &mut C) -> Result<(), C::Error>
+    pub fn renew_subscriptions<C>(&self, conn: &C) -> Result<(), C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error>,
-        C::TxConnection: 'static,
+        C: Connection<Error = <P::Connection as Connection>::Error> + 'static,
     {
         let now_unix = now_unix();
         let threshold: i64 = (now_unix.as_secs() + self.renewal_margin + 1)
             .try_into()
             .unwrap();
 
-        conn.transaction(|conn| {
+        conn.transaction(|| {
             let expiring = conn.get_subscriptions_expire_before(threshold)?;
 
             if expiring.is_empty() {
@@ -213,7 +212,7 @@ where
         id: u64,
         hub: String,
         topic: String,
-        conn: &mut C,
+        conn: &C,
     ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error>,
@@ -370,11 +369,10 @@ where
         &self,
         id: u64,
         query: &str,
-        conn: &mut C,
+        conn: &C,
     ) -> Result<Response<Full<Bytes>>, C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error>,
-        C::TxConnection: 'static,
+        C: Connection<Error = <P::Connection as Connection>::Error> + 'static,
     {
         match serde_urlencoded::from_str::<hub::Verify<String>>(query) {
             Ok(hub::Verify::Subscribe {
@@ -394,7 +392,7 @@ where
 
                     self.handle.hasten(self.refresh_time(expires_at as u64));
 
-                    conn.transaction(|conn| {
+                    conn.transaction(|| {
                         // Remove old subscriptions if any.
                         for id in conn.get_old_subscriptions(id, &hub, &topic)? {
                             log::info!("Removing the old subscription");

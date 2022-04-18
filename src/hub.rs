@@ -63,7 +63,7 @@ pub fn subscribe<C, S, B>(
     hub: String,
     topic: String,
     client: S,
-    conn: &mut C,
+    conn: &C,
 ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
 where
     C: Connection,
@@ -93,7 +93,7 @@ pub fn unsubscribe<C, S, B>(
     hub: String,
     topic: String,
     client: S,
-    conn: &mut C,
+    conn: &C,
 ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
 where
     C: Connection,
@@ -153,7 +153,7 @@ where
     })
 }
 
-fn create_subscription<C>(hub: &str, topic: &str, conn: &mut C) -> Result<(u64, Secret), C::Error>
+fn create_subscription<C>(hub: &str, topic: &str, conn: &C) -> Result<(u64, Secret), C::Error>
 where
     C: Connection,
 {
