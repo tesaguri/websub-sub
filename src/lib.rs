@@ -4,14 +4,14 @@
 #[macro_use]
 extern crate diesel;
 
-mod util;
-
 pub mod db;
 pub mod feed;
 pub mod hub;
-#[cfg(feature = "diesel1")]
-pub mod schema;
 pub mod subscriber;
+
+#[cfg(feature = "diesel1")]
+mod schema;
+mod util;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error<PE, CE, SE, BE> {
@@ -23,4 +23,12 @@ pub enum Error<PE, CE, SE, BE> {
     Service(#[source] SE),
     #[error("failed to read the HTTP response body")]
     Body(#[source] BE),
+}
+
+#[doc(hidden)]
+pub mod _private {
+    #[cfg(feature = "diesel1")]
+    pub extern crate diesel as diesel1;
+    #[cfg(feature = "diesel1")]
+    pub extern crate rand;
 }

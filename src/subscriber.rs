@@ -239,7 +239,7 @@ mod tests {
     use hyper::{service, Client};
     use sha1::Sha1;
 
-    use crate::db::Pool;
+    use crate::db::Pool as _;
     use crate::feed;
     use crate::hub;
     use crate::schema::*;
@@ -250,6 +250,16 @@ mod tests {
     use crate::util::{self, EitherUnwrapExt, FutureTimeoutExt};
 
     use super::*;
+
+    crate::db::diesel1::define_connection! {
+        subscriptions::table {
+            id: subscriptions::id,
+            hub: subscriptions::hub,
+            topic: subscriptions::topic,
+            secret: subscriptions::secret,
+            expires_at: subscriptions::expires_at,
+        }
+    }
 
     const TOPIC: &str = "http://example.com/feed.xml";
     const HUB: &str = "http://example.com/hub";
@@ -313,8 +323,7 @@ mod tests {
 
         drop(conn);
 
-        let (mut subscriber, client, listener) =
-            prepare_subscriber_with_pool(crate::db::diesel1::Pool::from(pool));
+        let (mut subscriber, client, listener) = prepare_subscriber_with_pool(Pool::from(pool));
         let mut listener = tokio_test::task::spawn(listener);
 
         let hub = Http::new();
@@ -630,7 +639,7 @@ mod tests {
 
     fn prepare_subscriber() -> (
         Subscriber<
-            crate::db::diesel1::Pool<ConnectionManager<SqliteConnection>>,
+            Pool<ConnectionManager<SqliteConnection>>,
             Client<Connector, Full<Bytes>>,
             Full<Bytes>,
             Listener,
@@ -643,14 +652,14 @@ mod tests {
             .build(ConnectionManager::new(":memory:"))
             .unwrap();
         run_migrations(&*pool.get().unwrap());
-        prepare_subscriber_with_pool(crate::db::diesel1::Pool::from(pool))
+        prepare_subscriber_with_pool(Pool::from(pool))
     }
 
     fn prepare_subscriber_with_pool(
-        pool: crate::db::diesel1::Pool<ConnectionManager<SqliteConnection>>,
+        pool: Pool<ConnectionManager<SqliteConnection>>,
     ) -> (
         Subscriber<
-            crate::db::diesel1::Pool<ConnectionManager<SqliteConnection>>,
+            Pool<ConnectionManager<SqliteConnection>>,
             Client<Connector, Full<Bytes>>,
             Full<Bytes>,
             Listener,
