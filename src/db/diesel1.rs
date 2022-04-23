@@ -23,6 +23,7 @@ macro_rules! diesel1_define_connection {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! _diesel1_define_connection_inner {
+    // Parse columns:
     (
         $table:path { id: $id:path, $($rest:tt)* }
         id: @,
@@ -108,6 +109,177 @@ macro_rules! _diesel1_define_connection_inner {
             expires_at: $expires_at,
         }
     };
+    // Handle erroneous inputs:
+    // Duplicate columns:
+    (
+        $table:path { id: $_:path, $($rest:tt)* }
+        id: $id:path,
+        hub: $hub:tt,
+        topic: $topic:tt,
+        secret: $secret:tt,
+        expires_at: $expires_at:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@duplicate id);
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($rest)* }
+            id: $id,
+            hub: $hub,
+            topic: $topic,
+            secret: $secret,
+            expires_at: $expires_at,
+        }
+    };
+    (
+        $table:path { hub: $_:path, $($rest:tt)* }
+        id: $id:tt,
+        hub: $hub:path,
+        topic: $topic:tt,
+        secret: $secret:tt,
+        expires_at: $expires_at:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@duplicate hub);
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($rest)* }
+            id: $id,
+            hub: $hub,
+            topic: $topic,
+            secret: $secret,
+            expires_at: $expires_at,
+        }
+    };
+    (
+        $table:path { topic: $_:path, $($rest:tt)* }
+        id: $id:tt,
+        hub: $hub:tt,
+        topic: $topic:path,
+        secret: $secret:tt,
+        expires_at: $expires_at:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@duplicate topic);
+        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+            id: $id,
+            hub: $hub,
+            topic: $topic,
+            secret: $secret,
+            expires_at: $expires_at,
+        } }
+    };
+    (
+        $table:path { secret: $_:path, $($rest:tt)* }
+        id: $id:tt,
+        hub: $hub:tt,
+        topic: $topic:tt,
+        secret: $secret:path,
+        expires_at: $expires_at:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@duplicate secret);
+        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+            id: $id,
+            hub: $hub,
+            topic: $topic,
+            secret: $secret,
+            expires_at: $expires_at,
+        } }
+    };
+    (
+        $table:path { expires_at: $_:path, $($rest:tt)* } 
+        id: $id:tt,
+        hub: $hub:tt,
+        topic: $topic:tt,
+        secret: $secret:tt,
+        expires_at: $expires_at:path,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@duplicate expires_at);
+        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+            id: $id,
+            hub: $hub,
+            topic: $topic,
+            secret: $secret,
+            expires_at: $expires_at,
+        } }
+    };
+    (@duplicate $column:ident) => {
+        compile_error!(concat!("column for `", stringify!($column), "` specified more than once"));
+    };
+    // Unknown columns:
+    (
+        $table:path { $column:ident: $_:path, $($rest:tt)* }
+        id: $id:tt,
+        hub: $hub:tt,
+        topic: $topic:tt,
+        secret: $secret:tt,
+        expires_at: $expires_at:tt,
+    ) => {
+        compile_error!(concat!("Unknown colum `", stringify!($column), "`"));
+        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+            id: $id,
+            hub: $hub,
+            topic: $topic,
+            secret: $secret,
+            expires_at: $expires_at,
+        } }
+    };
+    // Missing columns:
+    (
+        $table:path {}
+        id: @,
+        hub: $_h:tt,
+        topic: $_t:tt,
+        secret: $_s:tt,
+        expires_at: $_e:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@missing $table, id);
+    };
+    (
+        $table:path {}
+        id: $_i:tt,
+        hub: @,
+        topic: $_t:tt,
+        secret: $_s:tt,
+        expires_at: $_e:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@missing $table, hub);
+    };
+    (
+        $table:path {}
+        id: $_i:tt,
+        hub: $_h:tt,
+        topic: @,
+        secret: $_s:tt,
+        expires_at: $_e:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@missing $table, topic);
+    };
+    (
+        $table:path {}
+        id: $_i:tt,
+        hub: $_h:tt,
+        topic: $_t:tt,
+        secret: @,
+        expires_at: $_e:tt,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@missing $table, secret);
+    };
+    (
+        $table:path {}
+        id: $_i:tt,
+        hub: $_h:tt,
+        topic: $_t:tt,
+        secret: $_s:tt,
+        expires_at: @,
+    ) => {
+        $crate::_diesel1_define_connection_inner!(@missing $table, expires_at);
+    };
+    (@missing $table:path, $column:ident) => {
+        compile_error!(concat!(
+            "missing column for `",
+            stringify!($column),
+            "` in table `",
+            stringify!($table),
+            "`",
+        ));
+    };
+    // Expand to output:
     (
         $table:path {}
         id: $id:path,
