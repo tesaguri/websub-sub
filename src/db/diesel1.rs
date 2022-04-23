@@ -8,14 +8,74 @@ pub use crate::diesel1_define_connection as define_connection;
 // would have no way to instanciate `$id::Table` anyway.
 #[macro_export]
 macro_rules! diesel1_define_connection {
-    ($table:path { $($column:tt: $path:path),* $(,)? }) => {
+    // This may not be the most concise way of defining a macro of this sort (you could do
+    // something like `$($vis1 $kw1 $Name1; $($vis2 $kw2 $Name2;)?)?` for example), but the
+    // documentation is the easiest to understand this way.
+    (
+        $table:path {
+            $($column:tt: $path:path),* $(,)?
+        }
+        $(#[$conn_attr:meta])*
+        $conn_vis:vis connection $Connection:ident;
+        $(#[$pool_attr:meta])*
+        $pool_vis:vis pool $Pool:ident;
+    ) => {
         $crate::_diesel1_define_connection_inner! {
             $table { $($column: $path,)* }
-            id: @,
-            hub: @,
-            topic: @,
-            secret: @,
-            expires_at: @,
+            $(#[$conn_attr])* $conn_vis $Connection;
+            $(#[$pool_attr])* $pool_vis $Pool;
+        }
+    };
+    (
+        $table:path {
+            $($column:tt: $path:path),* $(,)?
+        }
+        $(#[$pool_attr:meta])*
+        $pool_vis:vis pool $Pool:ident;
+        $(#[$conn_attr:meta])*
+        $conn_vis:vis connection $Connection:ident;
+    ) => {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($column: $path,)* }
+            $(#[$conn_attr])* $conn_vis $Connection;
+            $(#[$pool_attr])* $pool_vis $Pool;
+        }
+    };
+    (
+        $table:path {
+            $($column:tt: $path:path),* $(,)?
+        }
+        $(#[$conn_attr:meta])*
+        $conn_vis:vis connection $Connection:ident;
+    ) => {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($column: $path,)* }
+            $(#[$conn_attr])* $conn_vis $Connection;
+            pub(crate) Pool;
+        }
+    };
+    (
+        $table:path {
+            $($column:tt: $path:path),* $(,)?
+        }
+        $(#[$pool_attr:meta])*
+        $pool_vis:vis pool $Pool:ident;
+    ) => {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($column: $path,)* }
+            pub(crate) Connection;
+            $(#[$pool_attr])* $pool_vis $Pool;
+        }
+    };
+    (
+        $table:path {
+            $($column:tt: $path:path),* $(,)?
+        }
+    ) => {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($column: $path,)* }
+            pub(crate) Connection;
+            pub(crate) Pool;
         }
     };
 }
@@ -23,6 +83,23 @@ macro_rules! diesel1_define_connection {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! _diesel1_define_connection_inner {
+    // Entry point:
+    (
+        $table:path { $($column:tt: $path:path),* $(,)? }
+        $(#[$cattr:meta])* $cvis:vis $Connection:ident;
+        $(#[$pattr:meta])* $pvis:vis $Pool:ident;
+    ) => {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($column: $path,)* }
+            id: @,
+            hub: @,
+            topic: @,
+            secret: @,
+            expires_at: @,
+            $(#[$cattr])* $cvis $Connection,
+            $(#[$pattr])* $pvis $Pool,
+        }
+    };
     // Parse columns:
     (
         $table:path { id: $id:path, $($rest:tt)* }
@@ -31,6 +108,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner! {
             $table { $($rest)* }
@@ -39,6 +117,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     (
@@ -48,6 +127,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner! {
             $table { $($rest)* }
@@ -56,6 +136,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     (
@@ -65,6 +146,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: @,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner! {
             $table { $($rest)* }
@@ -73,6 +155,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     (
@@ -82,6 +165,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: @,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner! {
             $table { $($rest)* }
@@ -90,6 +174,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     (
@@ -99,6 +184,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: @,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner! {
             $table { $($rest)* }
@@ -107,6 +193,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     // Handle erroneous inputs:
@@ -118,6 +205,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@duplicate id);
         $crate::_diesel1_define_connection_inner! {
@@ -127,6 +215,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     (
@@ -136,6 +225,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@duplicate hub);
         $crate::_diesel1_define_connection_inner! {
@@ -145,6 +235,7 @@ macro_rules! _diesel1_define_connection_inner {
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
+            $($items)+
         }
     };
     (
@@ -154,15 +245,18 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:path,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@duplicate topic);
-        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($rest)* }
             id: $id,
             hub: $hub,
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
-        } }
+            $($items)+
+        }
     };
     (
         $table:path { secret: $_:path, $($rest:tt)* }
@@ -171,32 +265,38 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:path,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@duplicate secret);
-        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($rest)* }
             id: $id,
             hub: $hub,
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
-        } }
+            $($items)+
+        }
     };
     (
-        $table:path { expires_at: $_:path, $($rest:tt)* } 
+        $table:path { expires_at: $_:path, $($rest:tt)* }
         id: $id:tt,
         hub: $hub:tt,
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: $expires_at:path,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@duplicate expires_at);
-        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($rest)* }
             id: $id,
             hub: $hub,
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
-        } }
+            $($items)+
+        }
     };
     (@duplicate $column:ident) => {
         compile_error!(concat!("column for `", stringify!($column), "` specified more than once"));
@@ -209,15 +309,17 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:tt,
         secret: $secret:tt,
         expires_at: $expires_at:tt,
+        $($items:tt)+
     ) => {
-        compile_error!(concat!("Unknown colum `", stringify!($column), "`"));
-        $crate::_diesel1_define_connection_inner! { $table { $($rest)* } {
+        compile_error!(concat!("Unknown colum kind `", stringify!($column), "`"));
+        $crate::_diesel1_define_connection_inner! {
+            $table { $($rest)* }
             id: $id,
             hub: $hub,
             topic: $topic,
             secret: $secret,
             expires_at: $expires_at,
-        } }
+        }
     };
     // Missing columns:
     (
@@ -227,6 +329,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $_t:tt,
         secret: $_s:tt,
         expires_at: $_e:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@missing $table, id);
     };
@@ -237,6 +340,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $_t:tt,
         secret: $_s:tt,
         expires_at: $_e:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@missing $table, hub);
     };
@@ -247,6 +351,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: @,
         secret: $_s:tt,
         expires_at: $_e:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@missing $table, topic);
     };
@@ -257,6 +362,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $_t:tt,
         secret: @,
         expires_at: $_e:tt,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@missing $table, secret);
     };
@@ -267,6 +373,7 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $_t:tt,
         secret: $_s:tt,
         expires_at: @,
+        $($items:tt)+
     ) => {
         $crate::_diesel1_define_connection_inner!(@missing $table, expires_at);
     };
@@ -287,12 +394,16 @@ macro_rules! _diesel1_define_connection_inner {
         topic: $topic:path,
         secret: $secret:path,
         expires_at: $expires_at:path,
+        $(#[$cattr:meta])* $cvis:vis $Connection:ident,
+        $(#[$pattr:meta])* $pvis:vis $Pool:ident,
     ) => {
-        pub struct Connection<C> {
+        $(#[$cattr])*
+        $cvis struct $Connection<C> {
             inner: C,
         }
 
-        pub struct Pool<M>
+        $(#[$pattr])*
+        $pvis struct $Pool<M>
         where
             M: $crate::_private::diesel1::r2d2::ManageConnection,
         {
