@@ -32,8 +32,8 @@ pub fn open_database() -> anyhow::Result<SqliteConnection> {
     Ok(conn)
 }
 
-pub fn database_pool(
-) -> anyhow::Result<websub_sub::db::diesel1::Pool<ConnectionManager<SqliteConnection>>> {
+pub(crate) fn database_pool(
+) -> anyhow::Result<crate::websub::Pool<ConnectionManager<SqliteConnection>>> {
     let ret = diesel::r2d2::Pool::builder()
         .connection_customizer(Box::new(ConnectionCustomizer))
         .build(ConnectionManager::new(DB_URL))?;
@@ -51,7 +51,6 @@ fn on_acquire(conn: &SqliteConnection) -> diesel::QueryResult<()> {
     conn.batch_execute(
         "\
         PRAGMA busy_timeout=5000;\
-        PRAGMA foreign_keys=ON;\
         PRAGMA journal_mode=WAL;\
         ",
     )

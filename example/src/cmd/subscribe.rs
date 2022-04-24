@@ -1,9 +1,9 @@
 use hyper::Uri;
-use structopt::StructOpt;
-use websub_sub::db::diesel1::Connection;
 use websub_sub::hub;
 
-#[derive(StructOpt)]
+use crate::websub::Connection;
+
+#[derive(clap::Args)]
 pub struct Opt {
     callback: Uri,
     hub: String,

@@ -1,9 +1,14 @@
+#[macro_use]
+extern crate diesel;
+
 mod cmd;
 mod common;
+mod schema;
+mod websub;
 
-use structopt::StructOpt;
+use clap::Parser;
 
-#[derive(StructOpt)]
+#[derive(Parser)]
 enum Cmd {
     Run(cmd::run::Opt),
     Subscribe(cmd::subscribe::Opt),
@@ -14,7 +19,7 @@ enum Cmd {
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let cmd = Cmd::from_args();
+    let cmd = Cmd::parse();
     match cmd {
         Cmd::Run(opt) => cmd::run::main(opt).await,
         Cmd::Subscribe(opt) => cmd::subscribe::main(opt).await,

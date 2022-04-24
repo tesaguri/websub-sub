@@ -5,12 +5,11 @@ use std::path::Path;
 
 use futures::{future, Stream, TryStreamExt};
 use hyper::Uri;
-use structopt::StructOpt;
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 
 use websub_sub::subscriber::Subscriber;
 
-#[derive(StructOpt)]
+#[derive(clap::Args)]
 pub struct Opt {
     callback: Uri,
     bind: Option<String>,
