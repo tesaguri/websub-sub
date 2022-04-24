@@ -61,6 +61,17 @@ pub struct Subscriber<P, S, B, I> {
     service: Arc<Service<P, S, B>>,
 }
 
+#[derive(Clone, Debug)]
+pub struct Builder {
+    renewal_margin: Duration,
+}
+
+impl Subscriber<(), (), (), ()> {
+    pub fn builder() -> Builder {
+        Builder::new()
+    }
+}
+
 impl<P, S, B, I> Subscriber<P, S, B, I>
 where
     P: Pool,
@@ -89,60 +100,7 @@ where
             <S::ResponseBody as Body>::Error,
         >,
     > {
-        Self::with_margin(Duration::from_secs(3600), incoming, callback, client, pool)
-    }
-
-    pub fn with_margin(
-        renewal_margin: Duration,
-        incoming: I,
-        callback: Uri,
-        client: S,
-        pool: P,
-    ) -> Result<
-        Self,
-        Error<
-            P::Error,
-            <P::Connection as Connection>::Error,
-            S::Error,
-            <S::ResponseBody as Body>::Error,
-        >,
-    > {
-        let renewal_margin = renewal_margin.as_secs();
-
-        let first_tick = try_conn!(try_pool!(pool.get()).get_next_expiry()).map(|expires_at| {
-            u64::try_from(expires_at).map_or(0, |expires_at| expires_at - renewal_margin)
-        });
-
-        let callback = prepare_callback_prefix(callback);
-
-        let (tx, rx) = mpsc::channel(0);
-
-        let service = Arc::new(service::Service {
-            callback,
-            renewal_margin,
-            client,
-            pool,
-            tx,
-            handle: scheduler::Handle::new(first_tick),
-            _marker: PhantomData,
-        });
-
-        tokio::spawn(Scheduler::new(&service, move |service| {
-            let mut conn = service.pool.get().unwrap();
-            service.renew_subscriptions(&mut conn).unwrap();
-            conn.get_next_expiry().unwrap().map(|expires_at| {
-                expires_at
-                    .try_into()
-                    .map_or(0, |expires_at| service.refresh_time(expires_at))
-            })
-        }));
-
-        Ok(Subscriber {
-            incoming,
-            server: Http::new(),
-            rx,
-            service,
-        })
+        Subscriber::builder().build(incoming, callback, client, pool)
     }
 
     fn accept_all(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), I::Error>> {
@@ -193,6 +151,91 @@ where
                 }
             }
         }
+    }
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Self {
+            renewal_margin: Duration::from_secs(3600),
+        }
+    }
+
+    pub fn renewal_margin(&mut self, renewal_margin: Duration) -> &mut Self {
+        self.renewal_margin = renewal_margin;
+        self
+    }
+
+    pub fn build<P, S, B, I>(
+        &self,
+        incoming: I,
+        callback: Uri,
+        client: S,
+        pool: P,
+    ) -> Result<
+        Subscriber<P, S, B, I>,
+        Error<
+            P::Error,
+            <P::Connection as Connection>::Error,
+            S::Error,
+            <S::ResponseBody as Body>::Error,
+        >,
+    >
+    where
+        P: Pool,
+        P::Error: Debug,
+        <P::Connection as Connection>::Error: Debug,
+        S: HttpService<B> + Clone + Send + Sync + 'static,
+        S::Error: Debug + Send,
+        S::Future: Send,
+        S::ResponseBody: Send,
+        <S::ResponseBody as Body>::Error: Debug,
+        B: Default + From<Vec<u8>> + Send + 'static,
+        I: TryStream,
+        I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        let renewal_margin = self.renewal_margin.as_secs();
+
+        let first_tick = try_conn!(try_pool!(pool.get()).get_next_expiry()).map(|expires_at| {
+            u64::try_from(expires_at).map_or(0, |expires_at| expires_at - renewal_margin)
+        });
+
+        let callback = prepare_callback_prefix(callback);
+
+        let (tx, rx) = mpsc::channel(0);
+
+        let service = Arc::new(service::Service {
+            callback,
+            renewal_margin,
+            client,
+            pool,
+            tx,
+            handle: scheduler::Handle::new(first_tick),
+            _marker: PhantomData,
+        });
+
+        tokio::spawn(Scheduler::new(&service, move |service| {
+            let mut conn = service.pool.get().unwrap();
+            service.renew_subscriptions(&mut conn).unwrap();
+            conn.get_next_expiry().unwrap().map(|expires_at| {
+                expires_at
+                    .try_into()
+                    .map_or(0, |expires_at| service.refresh_time(expires_at))
+            })
+        }));
+
+        Ok(Subscriber {
+            incoming,
+            server: Http::new(),
+            rx,
+            service,
+        })
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -679,14 +722,15 @@ mod tests {
             .pool_max_idle_per_host(0)
             .build::<_, Full<Bytes>>(hub_conn);
 
-        let subscriber = Subscriber::with_margin(
-            MARGIN,
-            sub_listener,
-            Uri::from_static("http://example.com/"),
-            sub_client,
-            pool,
-        )
-        .unwrap();
+        let subscriber = Subscriber::builder()
+            .renewal_margin(MARGIN)
+            .build(
+                sub_listener,
+                Uri::from_static("http://example.com/"),
+                sub_client,
+                pool,
+            )
+            .unwrap();
 
         (subscriber, hub_client, hub_listener)
     }
