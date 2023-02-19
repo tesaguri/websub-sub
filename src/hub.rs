@@ -1,5 +1,6 @@
 use std::str;
 
+use base64::Engine;
 use futures::{Future, TryFutureExt};
 use http::header::{CONTENT_TYPE, LOCATION};
 use http::uri::{Parts, PathAndQuery, Uri};
@@ -181,7 +182,14 @@ fn gen_secret<R: RngCore>(mut rng: R) -> Secret {
     let mut rand = [0_u8; SECRET_LEN * 6 / 8];
     rng.fill_bytes(&mut rand);
 
-    base64::encode_config_slice(&rand, base64::URL_SAFE_NO_PAD, &mut ret);
+    let result = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_slice(&rand, &mut ret);
+    // The result can safely be ignored since the only possible error is `OutputSliceTooSmall`,
+    // which won't happen here, but we are matching against it just in case `base64` crate will add
+    // another error variant.
+    debug_assert!(match result {
+        Ok(len) => len == ret.len(),
+        Err(base64::EncodeSliceError::OutputSliceTooSmall) => false,
+    });
 
     unsafe {
         // We cannot assume in unsafe code that the safe code of `base64` crate produces a valid

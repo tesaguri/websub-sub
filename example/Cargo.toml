@@ -6,9 +6,9 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-clap = { version = "3", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 diesel = { version = "1.4.3", default-features = false, features = ["r2d2", "sqlite"] }
-env_logger = "0.9"
+env_logger = "0.10"
 futures = "0.3"
 hyper = { version = "0.14", features = ["client", "http1", "http2"] }
 hyper-tls = "0.5"

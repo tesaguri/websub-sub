@@ -10,11 +10,11 @@ use bytes::Bytes;
 use futures::channel::mpsc;
 use futures::{Future, FutureExt, TryFutureExt, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
-use hmac::digest::FixedOutput;
-use hmac::{Hmac, Mac, NewMac};
+use hmac::{Hmac, Mac};
 use http::header::{HeaderName, CONTENT_TYPE};
 use http::{Request, Response, StatusCode, Uri};
 use http_body::{Body, Full};
+use sha1::digest::OutputSizeUser;
 use sha1::Sha1;
 use tower::ServiceExt;
 
@@ -303,7 +303,7 @@ where
 
         let signature = match method {
             b"sha1" => {
-                const LEN: usize = <<Sha1 as FixedOutput>::OutputSize as Unsigned>::USIZE;
+                const LEN: usize = <<Sha1 as OutputSizeUser>::OutputSize as Unsigned>::USIZE;
                 let mut buf = [0_u8; LEN];
                 validate!(hex::decode_to_slice(signature_hex, &mut buf));
                 buf

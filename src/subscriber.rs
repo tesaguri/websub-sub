@@ -273,7 +273,7 @@ mod tests {
     use diesel::SqliteConnection;
     use futures::channel::oneshot;
     use futures::future;
-    use hmac::{Hmac, Mac, NewMac};
+    use hmac::{Hmac, Mac};
     use http::header::CONTENT_TYPE;
     use http::Uri;
     use http::{Method, Request, Response, StatusCode};

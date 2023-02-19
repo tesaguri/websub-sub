@@ -16,14 +16,14 @@ keywords = ["websub", "pubsubhubbub"]
 categories = ["web-programming"]
 
 [dependencies]
-atom = { version = "0.11", package = "atom_syndication" }
-auto_enums = "0.7"
-base64 = "0.13"
+atom = { version = "0.12", package = "atom_syndication" }
+auto_enums = "0.8"
+base64 = "0.21"
 bytes = "1"
 cfg-if = "1"
 futures = "0.3"
 hex = "0.4"
-hmac = "0.11"
+hmac = "0.12"
 http = "0.2"
 http-body = "0.4.2"
 http-serde = "1"
@@ -36,9 +36,8 @@ rand = "0.8"
 rss = "2"
 serde = { version = "1", features = ["derive"] }
 serde_urlencoded = "0.7"
-sha-1 = "0.9"
-string = { version = "0.2", default-features = false }
-structopt = "0.3"
+sha1 = "0.10"
+string = { version = "0.3", default-features = false }
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-test = "0.4"
