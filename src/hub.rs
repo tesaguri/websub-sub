@@ -183,5 +183,24 @@ fn gen_secret<R: RngCore>(mut rng: R) -> Secret {
 
     base64::encode_config_slice(&rand, base64::URL_SAFE_NO_PAD, &mut ret);
 
-    unsafe { string::String::from_utf8_unchecked(ret) }
+    unsafe {
+        // We cannot assume in unsafe code that the safe code of `base64` crate produces a valid
+        // UTF-8 string.
+        str::from_utf8(&ret).unwrap();
+
+        // The `unchecked` is still required because `[u8; 32]` doesn't implement
+        // `string::StableAsRef`.
+        //
+        // TODO: Use `string::TryFrom` once the `StableAsRef` implementation lands.
+        // cf. <https://github.com/carllerche/string/pull/28>
+        //
+        // SAFETY:
+        //
+        // `[u8; 32]` satisfies the requirements of `StableAsRef` trait... maybe. At least, `string`
+        // crate itself implements it for `[u8; N]` where `N <= 16`. This seems to be a reasonable
+        // assumption to put on a standard library to keep holding in the past, present and future.
+        // See also the discussion on trusting the impl of primitive types in the Rustonomicon:
+        // <https://doc.rust-lang.org/1.67.1/nomicon/safe-unsafe-meaning.html>
+        string::String::from_utf8_unchecked(ret)
+    }
 }
