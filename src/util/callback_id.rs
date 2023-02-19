@@ -1,9 +1,6 @@
 use base64::display::Base64Display;
 
-pub fn encode(id: &[u8]) -> Base64Display<'_> {
-    // `id` should be the byte representation of an `i64` in little endian.
-    debug_assert!(id.len() == 8);
-
+pub fn encode(id: &[u8; 8]) -> Base64Display<'_> {
     // Strip the most significant zeroes.
     let i = id.iter().rev().position(|&b| b != 0).unwrap_or(id.len());
     let id = &id[..(id.len() - i)];
