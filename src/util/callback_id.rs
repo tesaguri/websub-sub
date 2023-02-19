@@ -2,9 +2,8 @@ use base64::display::Base64Display;
 
 pub fn encode(id: &[u8; 8]) -> Base64Display<'_> {
     // Strip the most significant zeroes.
-    let i = id.iter().rev().position(|&b| b != 0).unwrap_or(id.len());
-    let id = &id[..(id.len() - i)];
-    Base64Display::with_config(id, base64::URL_SAFE_NO_PAD)
+    let end = memchr::memrchr(b'\0', &id[..]).unwrap_or(id.len());
+    Base64Display::with_config(&id[..end], base64::URL_SAFE_NO_PAD)
 }
 
 pub fn decode(id: &str) -> Option<u64> {

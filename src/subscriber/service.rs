@@ -289,7 +289,7 @@ where
             return Ok(Response::new(Full::default()));
         };
 
-        let pos = signature_header.iter().position(|&b| b == b'=');
+        let pos = memchr::memchr(b'=', signature_header);
         let (method, signature_hex) = if let Some(i) = pos {
             let (method, hex) = signature_header.split_at(i);
             (method, &hex[1..])

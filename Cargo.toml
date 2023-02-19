@@ -29,6 +29,7 @@ http-body = "0.4.2"
 http-serde = "1"
 hyper = { version = "0.14", features = ["http1", "http2", "server", "stream"] }
 log = "0.4"
+memchr = "2"
 mime = "0.3"
 pin-project = "1"
 rand = "0.8"
