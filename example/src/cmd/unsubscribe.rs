@@ -4,8 +4,8 @@ use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use hyper::Uri;
 use websub_sub::db::Connection as _;
 use websub_sub::hub;
-use websub_sub::schema::*;
 
+use crate::schema::*;
 use crate::websub::Connection;
 
 #[derive(clap::Args)]
