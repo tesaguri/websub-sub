@@ -182,7 +182,12 @@ fn gen_secret<R: RngCore>(mut rng: R) -> Secret {
     let mut rand = [0_u8; SECRET_LEN * 6 / 8];
     rng.fill_bytes(&mut rand);
 
-    let result = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_slice(&rand, &mut ret);
+    let result = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_slice(
+        // Passing the whole array by-value would be inefficient
+        #[allow(clippy::needless_borrow)]
+        &rand,
+        &mut ret,
+    );
     // The result can safely be ignored since the only possible error is `OutputSliceTooSmall`,
     // which won't happen here, but we are matching against it just in case `base64` crate will add
     // another error variant.

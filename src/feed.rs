@@ -95,7 +95,7 @@ impl Entry {
             summary: entry
                 .summary
                 .map(|text| text.value)
-                .or_else(|| take_media_description_atom(&mut entry.extensions, namespaces)),
+                .or_else(|| take_media_description(&mut entry.extensions, namespaces)),
             content: entry.content.and_then(|c| c.value),
             updated: Some(entry.updated.timestamp()),
         }
@@ -115,22 +115,123 @@ impl Entry {
             link,
             summary: item
                 .description
-                .or_else(|| take_media_description_rss(&mut item.extensions, namespaces)),
+                .or_else(|| take_media_description(&mut item.extensions, namespaces)),
             content: item.content,
             updated: None,
         }
     }
 }
 
+trait Extension {
+    fn name(&self) -> &str;
+    fn value_mut(&mut self) -> &mut Option<String>;
+    fn children_mut(&mut self) -> &mut BTreeMap<String, Vec<Self>>
+    where
+        Self: Sized;
+}
+
+macro_rules! impl_extensions {
+    ($($Extension:ty;)*) => {$(
+        impl Extension for $Extension {
+            fn name(&self) -> &str {
+                &self.name
+            }
+
+            fn value_mut(&mut self) -> &mut Option<String> {
+                &mut self.value
+            }
+
+            fn children_mut(&mut self) -> &mut BTreeMap<String, Vec<Self>> {
+                &mut self.children
+            }
+        }
+    )*};
+}
+
+impl_extensions! {
+    atom::extension::Extension;
+    rss::extension::Extension;
+}
+
+/// Takes `media:description` string from the entry/item.
+///
+/// <https://www.rssboard.org/media-rss#media-description>
+fn take_media_description<E: Extension>(
+    extensions: &mut BTreeMap<String, BTreeMap<String, Vec<E>>>,
+    namespaces: &BTreeMap<String, String>,
+) -> Option<String> {
+    fn take_first_value<E: Extension>(elms: &mut [E]) -> Option<String> {
+        elms.iter_mut()
+            .flat_map(|elm| elm.value_mut().take())
+            .next()
+    }
+
+    fn take_content_description<E: Extension>(elms: &mut [E]) -> Option<String> {
+        elms.iter_mut()
+            .flat_map(|elm| elm.children_mut())
+            .filter(|(name, _)| name[..] == *"description")
+            .flat_map(|(_, elms)| take_first_value(elms))
+            .next()
+    }
+
+    let mut entry_description = None;
+    let mut group_description = None;
+
+    for (prefix, map) in extensions {
+        if namespaces
+            .get(prefix)
+            .map_or(false, |s| s == util::consts::NS_MRSS)
+        {
+            for (name, elms) in map {
+                match &name[..] {
+                    "description" => {
+                        if entry_description.is_none() {
+                            entry_description = take_first_value(elms);
+                        }
+                    }
+                    "content" => {
+                        if let Some(v) = take_content_description(elms) {
+                            // `media:content`'s description takes the strongest precedence.
+                            return Some(v);
+                        }
+                    }
+                    "group" => {
+                        for elm in elms {
+                            for (name, elms) in elm.children_mut() {
+                                match &name[..] {
+                                    "description" => {
+                                        if group_description.is_none() {
+                                            group_description = take_first_value(elms);
+                                        }
+                                    }
+                                    "content" => {
+                                        if let Some(v) = take_content_description(elms) {
+                                            return Some(v);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    group_description.or(entry_description)
+}
+
 impl RawFeed {
     pub fn parse(kind: MediaType, content: &[u8]) -> Option<Self> {
         match kind {
-            MediaType::Atom => atom::Feed::read_from(&*content).ok().map(RawFeed::Atom),
-            MediaType::Rss => rss::Channel::read_from(&*content).ok().map(RawFeed::Rss),
-            MediaType::Xml => atom::Feed::read_from(&*content)
+            MediaType::Atom => atom::Feed::read_from(content).ok().map(RawFeed::Atom),
+            MediaType::Rss => rss::Channel::read_from(content).ok().map(RawFeed::Rss),
+            MediaType::Xml => atom::Feed::read_from(content)
                 .ok()
                 .map(RawFeed::Atom)
-                .or_else(|| rss::Channel::read_from(&*content).ok().map(RawFeed::Rss)),
+                .or_else(|| rss::Channel::read_from(content).ok().map(RawFeed::Rss)),
         }
     }
 }
@@ -164,84 +265,6 @@ impl std::str::FromStr for MediaType {
         }
     }
 }
-
-macro_rules! def_take_media_description {
-    ($name:ident, $Extension:ty) => {
-        /// Takes `media:description` string from the entry/item.
-        ///
-        /// <https://www.rssboard.org/media-rss#media-description>
-        fn $name(
-            extensions: &mut BTreeMap<String, BTreeMap<String, Vec<$Extension>>>,
-            namespaces: &BTreeMap<String, String>,
-        ) -> Option<String> {
-            fn take_description(elms: &mut Vec<$Extension>) -> Option<String> {
-                elms.iter_mut().flat_map(|elm| elm.value.take()).next()
-            }
-
-            fn take_content_description(elms: &mut Vec<$Extension>) -> Option<String> {
-                for elm in elms {
-                    for (name, elms) in &mut elm.children {
-                        if name == "description" {
-                            return take_description(elms);
-                        }
-                    }
-                }
-                None
-            }
-
-            let mut entry_description = None;
-            let mut group_description = None;
-
-            for (prefix, map) in extensions {
-                if namespaces
-                    .get(prefix)
-                    .map_or(false, |s| s == util::consts::NS_MRSS)
-                {
-                    for (name, elms) in map {
-                        match &name[..] {
-                            "description" => {
-                                if let Some(v) = take_description(elms) {
-                                    entry_description.get_or_insert(v);
-                                }
-                            }
-                            "content" => {
-                                if let Some(v) = take_content_description(elms) {
-                                    // `media:content`'s description takes the strongest precedence.
-                                    return Some(v);
-                                }
-                            }
-                            "group" => {
-                                for elm in elms {
-                                    for (name, elms) in &mut elm.children {
-                                        match &name[..] {
-                                            "description" => {
-                                                if let Some(v) = take_description(elms) {
-                                                    group_description.get_or_insert(v);
-                                                }
-                                            }
-                                            "content" => {
-                                                if let Some(v) = take_content_description(elms) {
-                                                    return Some(v);
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            group_description.or(entry_description)
-        }
-    };
-}
-
-def_take_media_description!(take_media_description_atom, atom::extension::Extension);
-def_take_media_description!(take_media_description_rss, rss::extension::Extension);
 
 #[cfg(test)]
 mod tests {

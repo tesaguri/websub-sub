@@ -86,6 +86,7 @@ where
     I: TryStream,
     I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
+    #[allow(clippy::type_complexity)]
     pub fn new(
         incoming: I,
         callback: Uri,
@@ -143,13 +144,14 @@ where
 
         match self.as_mut().project().rx.poll_next_unpin(cx) {
             Poll::Ready(option) => Poll::Ready(option.map(Ok)),
-            Poll::Pending => {
-                if incoming_done && Arc::strong_count(&self.service) == 1 {
-                    Poll::Ready(None)
-                } else {
-                    Poll::Pending
-                }
+            Poll::Pending if incoming_done && Arc::strong_count(&self.service) == 1 => {
+                Poll::Ready(None)
             }
+            // TODO: Notify the task when `strong_count` reaches `1`.
+            // Though I'm optimistic that this won't affect production code since the real
+            // `TcpListener` won't terminate except in a fatal error, which is propagated above.
+            // This may affect mocking codes however.
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -166,6 +168,7 @@ impl Builder {
         self
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn build<P, S, B, I>(
         &self,
         incoming: I,
@@ -197,7 +200,9 @@ impl Builder {
         let renewal_margin = self.renewal_margin.as_secs();
 
         let first_tick = try_conn!(try_pool!(pool.get()).get_next_expiry()).map(|expires_at| {
-            u64::try_from(expires_at).map_or(0, |expires_at| expires_at - renewal_margin)
+            u64::try_from(expires_at)
+                .unwrap_or(0)
+                .saturating_sub(renewal_margin)
         });
 
         let callback = prepare_callback_prefix(callback);
@@ -211,7 +216,7 @@ impl Builder {
             pool,
             tx,
             handle: scheduler::Handle::new(first_tick),
-            _marker: PhantomData,
+            marker: PhantomData,
         });
 
         tokio::spawn(Scheduler::new(&service, move |service| {
@@ -247,12 +252,10 @@ fn prepare_callback_prefix(prefix: Uri) -> Uri {
     if path.ends_with('/') {
         prefix
     } else {
-        let path = {
-            let mut buf = String::with_capacity(path.len() + 1);
-            buf.push_str(path);
-            buf.push('/');
-            PathAndQuery::try_from(buf).unwrap()
-        };
+        let mut buf = String::with_capacity(path.len() + 1);
+        buf.push_str(path);
+        buf.push('/');
+        let path = PathAndQuery::try_from(buf).unwrap();
         let mut parts = prefix.into_parts();
         parts.path_and_query = Some(path);
         Uri::from_parts(parts).unwrap()
@@ -279,7 +282,7 @@ mod tests {
     use http::{Method, Request, Response, StatusCode};
     use http_body::Full;
     use hyper::server::conn::Http;
-    use hyper::{service, Client};
+    use hyper::service;
     use sha1::Sha1;
 
     use crate::db::Pool as _;
@@ -302,7 +305,12 @@ mod tests {
             secret: subscriptions::secret,
             expires_at: subscriptions::expires_at,
         }
+        pool GenericPool;
     }
+
+    type Body = Full<Bytes>;
+    type Client = hyper::Client<Connector, Body>;
+    type Pool = GenericPool<ConnectionManager<SqliteConnection>>;
 
     const TOPIC: &str = "http://example.com/feed.xml";
     const HUB: &str = "http://example.com/hub";
@@ -680,16 +688,7 @@ mod tests {
             .unwrap());
     }
 
-    fn prepare_subscriber() -> (
-        Subscriber<
-            Pool<ConnectionManager<SqliteConnection>>,
-            Client<Connector, Full<Bytes>>,
-            Full<Bytes>,
-            Listener,
-        >,
-        Client<Connector, Full<Bytes>>,
-        Listener,
-    ) {
+    fn prepare_subscriber() -> (Subscriber<Pool, Client, Body, Listener>, Client, Listener) {
         let pool = diesel::r2d2::Pool::builder()
             .max_size(1)
             .build(ConnectionManager::new(":memory:"))
@@ -699,28 +698,19 @@ mod tests {
     }
 
     fn prepare_subscriber_with_pool(
-        pool: Pool<ConnectionManager<SqliteConnection>>,
-    ) -> (
-        Subscriber<
-            Pool<ConnectionManager<SqliteConnection>>,
-            Client<Connector, Full<Bytes>>,
-            Full<Bytes>,
-            Listener,
-        >,
-        Client<Connector, Full<Bytes>>,
-        Listener,
-    ) {
+        pool: Pool,
+    ) -> (Subscriber<Pool, Client, Body, Listener>, Client, Listener) {
         let (hub_conn, sub_listener) = util::connection();
         let (sub_conn, hub_listener) = util::connection();
-        let sub_client = Client::builder()
+        let sub_client = hyper::Client::builder()
             // https://github.com/hyperium/hyper/issues/2312#issuecomment-722125137
             .pool_idle_timeout(Duration::from_secs(0))
             .pool_max_idle_per_host(0)
-            .build::<_, Full<Bytes>>(sub_conn);
-        let hub_client = Client::builder()
+            .build::<_, Body>(sub_conn);
+        let hub_client = hyper::Client::builder()
             .pool_idle_timeout(Duration::from_secs(0))
             .pool_max_idle_per_host(0)
-            .build::<_, Full<Bytes>>(hub_conn);
+            .build::<_, Body>(hub_conn);
 
         let subscriber = Subscriber::builder()
             .renewal_margin(MARGIN)
@@ -779,7 +769,7 @@ mod tests {
     }
 
     fn verify_intent<'a>(
-        client: &Client<Connector, Full<Bytes>>,
+        client: &Client,
         callback: &Uri,
         query: &hub::Verify<&'a str>,
     ) -> impl std::future::Future<Output = ()> + 'a {

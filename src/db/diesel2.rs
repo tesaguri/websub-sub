@@ -431,9 +431,7 @@ macro_rules! _diesel2_define_connection_inner {
             use diesel::sql_types::{self, HasSqlType};
             use rand::RngCore;
 
-            use self::{Connection, Pool};
-
-            impl<C, DB> Connection<C>
+            impl<C, DB> self::$Connection<C>
             where
                 C: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
                 DB: Backend
@@ -453,12 +451,13 @@ macro_rules! _diesel2_define_connection_inner {
                 for<'a> &'a str: ToSql<sql_types::Text, DB>,
                 String: FromSql<sql_types::Text, DB>,
             {
+                #[allow(dead_code)]
                 pub fn new(connection: C) -> Self {
-                    Connection { inner: connection }
+                    self::$Connection { inner: connection }
                 }
             }
 
-            impl<C, DB> $crate::db::Connection for Connection<C>
+            impl<C, DB> $crate::db::Connection for self::$Connection<C>
             where
                 C: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
                 DB: Backend
@@ -490,7 +489,7 @@ macro_rules! _diesel2_define_connection_inner {
                             // The `#[repr(transparent)]` attribute on `Connection<C>` declaration
                             // guarantees that `Connection<C>` has the same layout as `C`, ensuring
                             // the soundness of the transmution.
-                            mem::transmute::<&mut C, &mut Connection<C>>(inner)
+                            mem::transmute::<&mut C, &mut self::$Connection<C>>(inner)
                         };
                         f(this)
                     })
@@ -611,25 +610,26 @@ macro_rules! _diesel2_define_connection_inner {
                 }
             }
 
-            impl<C> Connection<C> {
+            impl<C> self::$Connection<C> {
+                #[allow(dead_code)]
                 pub fn into_inner(self) -> C {
                     self.inner
                 }
             }
 
-            impl<C> AsRef<C> for Connection<C> {
+            impl<C> AsRef<C> for self::$Connection<C> {
                 fn as_ref(&self) -> &C {
                     &self.inner
                 }
             }
 
-            impl<C> AsMut<C> for Connection<C> {
+            impl<C> AsMut<C> for self::$Connection<C> {
                 fn as_mut(&mut self) -> &mut C {
                     &mut self.inner
                 }
             }
 
-            impl<M: ManageConnection, DB> Pool<M>
+            impl<M: ManageConnection, DB> self::$Pool<M>
             where
                 PooledConnection<M>:
                     diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
@@ -650,24 +650,26 @@ macro_rules! _diesel2_define_connection_inner {
                 for<'a> &'a str: ToSql<sql_types::Text, DB>,
                 String: FromSql<sql_types::Text, DB>,
             {
+                #[allow(dead_code)]
                 pub fn new(manager: M) -> Result<Self, diesel::r2d2::PoolError> {
-                    diesel::r2d2::Pool::new(manager).map(Pool::from)
+                    diesel::r2d2::Pool::new(manager).map(self::$Pool::from)
                 }
             }
 
-            impl<M: ManageConnection> Pool<M> {
+            impl<M: ManageConnection> self::$Pool<M> {
+                #[allow(dead_code)]
                 pub fn into_inner(self) -> diesel::r2d2::Pool<M> {
                     self.inner
                 }
             }
 
-            impl<M: ManageConnection> AsRef<diesel::r2d2::Pool<M>> for Pool<M> {
+            impl<M: ManageConnection> AsRef<diesel::r2d2::Pool<M>> for self::$Pool<M> {
                 fn as_ref(&self) -> &diesel::r2d2::Pool<M> {
                     &self.inner
                 }
             }
 
-            impl<M: ManageConnection, DB> From<diesel::r2d2::Pool<M>> for Pool<M>
+            impl<M: ManageConnection, DB> From<diesel::r2d2::Pool<M>> for self::$Pool<M>
             where
                 PooledConnection<M>:
                     diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
@@ -689,19 +691,19 @@ macro_rules! _diesel2_define_connection_inner {
                 String: FromSql<sql_types::Text, DB>,
             {
                 fn from(pool: diesel::r2d2::Pool<M>) -> Self {
-                    Pool { inner: pool }
+                    self::$Pool { inner: pool }
                 }
             }
 
-            impl<M: ManageConnection> Clone for Pool<M> {
+            impl<M: ManageConnection> Clone for self::$Pool<M> {
                 fn clone(&self) -> Self {
-                    Pool {
+                    self::$Pool {
                         inner: self.inner.clone(),
                     }
                 }
             }
 
-            impl<M: ManageConnection, DB> $crate::db::Pool for Pool<M>
+            impl<M: ManageConnection, DB> $crate::db::Pool for self::$Pool<M>
             where
                 PooledConnection<M>:
                     diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
@@ -722,11 +724,11 @@ macro_rules! _diesel2_define_connection_inner {
                 for<'a> &'a str: ToSql<sql_types::Text, DB>,
                 String: FromSql<sql_types::Text, DB>,
             {
-                type Connection = Connection<PooledConnection<M>>;
+                type Connection = self::$Connection<PooledConnection<M>>;
                 type Error = diesel::r2d2::PoolError;
 
                 fn get(&self) -> Result<Self::Connection, Self::Error> {
-                    self.inner.get().map(|inner| Connection { inner })
+                    self.inner.get().map(|inner| self::$Connection { inner })
                 }
             }
         };

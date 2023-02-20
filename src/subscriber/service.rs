@@ -11,7 +11,7 @@ use futures::channel::mpsc;
 use futures::{Future, FutureExt, TryFutureExt, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::{Hmac, Mac};
-use http::header::{HeaderName, CONTENT_TYPE};
+use http::header::CONTENT_TYPE;
 use http::{Request, Response, StatusCode, Uri};
 use http_body::{Body, Full};
 use sha1::digest::OutputSizeUser;
@@ -33,7 +33,7 @@ pub struct Service<P, S, B> {
     pub(super) pool: P,
     pub(super) tx: mpsc::Sender<(String, Feed)>,
     pub(super) handle: scheduler::Handle,
-    pub(super) _marker: PhantomData<fn() -> B>,
+    pub(super) marker: PhantomData<fn() -> B>,
 }
 
 impl<P, S, B> Service<P, S, B>
@@ -220,6 +220,7 @@ where
         hub::unsubscribe(&self.callback, id, hub, topic, self.client.clone(), conn)
     }
 
+    #[allow(clippy::type_complexity)]
     fn call(
         &self,
         req: Request<hyper::Body>,
@@ -235,28 +236,14 @@ where
     where
         S::Error: Debug,
     {
-        macro_rules! validate {
-            ($input:expr) => {
-                match $input {
-                    Ok(x) => x,
-                    Err(_) => {
-                        return Ok(Response::builder()
-                            .status(StatusCode::BAD_REQUEST)
-                            .body(Full::default())
-                            .unwrap());
-                    }
-                }
-            };
-        }
-
         let path = req.uri().path();
-        let id = if let Some(id) = path.strip_prefix(self.callback.path()) {
-            validate!(crate::util::callback_id::decode(id).ok_or(()))
+        let id = if let Some(id) = path
+            .strip_prefix(self.callback.path())
+            .and_then(crate::util::callback_id::decode)
+        {
+            id
         } else {
-            return Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Full::default())
-                .unwrap());
+            return Ok(empty_response(StatusCode::NOT_FOUND));
         };
 
         let mut conn = try_pool!(self.pool.get());
@@ -275,18 +262,15 @@ where
         {
             m
         } else {
-            return Ok(Response::builder()
-                .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-                .body(Full::default())
-                .unwrap());
+            return Ok(empty_response(StatusCode::UNSUPPORTED_MEDIA_TYPE));
         };
 
-        let hub_signature = HeaderName::from_static(HUB_SIGNATURE);
-        let signature_header = if let Some(v) = req.headers().get(hub_signature) {
+        let signature_header = if let Some(v) = req.headers().get(HUB_SIGNATURE) {
             v.as_bytes()
         } else {
             log::debug!("Callback {}: missing signature", id);
-            return Ok(Response::new(Full::default()));
+            // The WebSub spec doesn't seem to specify appropriate error code in this case
+            return Ok(Response::default());
         };
 
         let pos = memchr::memchr(b'=', signature_header);
@@ -295,26 +279,22 @@ where
             (method, &hex[1..])
         } else {
             log::debug!("Callback {}: malformed signature", id);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::default())
-                .unwrap());
+            return Ok(empty_response(StatusCode::BAD_REQUEST));
         };
 
         let signature = match method {
             b"sha1" => {
                 const LEN: usize = <<Sha1 as OutputSizeUser>::OutputSize as Unsigned>::USIZE;
                 let mut buf = [0_u8; LEN];
-                validate!(hex::decode_to_slice(signature_hex, &mut buf));
+                if hex::decode_to_slice(signature_hex, &mut buf).is_err() {
+                    return Ok(empty_response(StatusCode::BAD_REQUEST));
+                }
                 buf
             }
             _ => {
                 let method = String::from_utf8_lossy(method);
                 log::debug!("Callback {}: unknown digest algorithm: {}", id, method);
-                return Ok(Response::builder()
-                    .status(StatusCode::NOT_ACCEPTABLE)
-                    .body(Full::default())
-                    .unwrap());
+                return Ok(empty_response(StatusCode::NOT_ACCEPTABLE));
             }
         };
 
@@ -325,10 +305,7 @@ where
             } else {
                 // Return HTTP 410 code to let the hub end the subscription if the ID is of
                 // a previously removed subscription.
-                return Ok(Response::builder()
-                    .status(StatusCode::GONE)
-                    .body(Full::default())
-                    .unwrap());
+                return Ok(empty_response(StatusCode::GONE));
             };
             let mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).unwrap();
             (topic, mac)
@@ -362,7 +339,7 @@ where
             .map(|_| ());
         tokio::spawn(verify_signature);
 
-        Ok(Response::new(Full::default()))
+        Ok(Response::default())
     }
 
     fn verify_intent<C>(
@@ -418,10 +395,7 @@ where
             _ => {}
         }
 
-        Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Full::default())
-            .unwrap())
+        Ok(empty_response(StatusCode::NOT_FOUND))
     }
 }
 
@@ -462,10 +436,7 @@ where
             Ok(ret) => future::ready(Ok(ret)),
             Err(e) => {
                 log::error!("error while serving an HTTP request: {:?}", e);
-                future::ready(Ok(Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Full::default())
-                    .unwrap()))
+                future::ready(Ok(empty_response(StatusCode::INTERNAL_SERVER_ERROR)))
             }
         }
     }
@@ -480,8 +451,8 @@ fn rss_hub_links(
             .get(&*prefix)
             .map_or(false, |s| s == util::consts::NS_ATOM);
         map.into_iter()
-            .filter_map(|(name, elms)| (name == "link").then(move || elms))
-            .flatten()
+            .filter(|(name, _)| (name == "link"))
+            .flat_map(|(_, elms)| elms)
             .filter(move |elm| {
                 if let Some((_, ns)) = elm
                     .attrs
@@ -496,6 +467,12 @@ fn rss_hub_links(
             .filter(|elm| elm.attrs.get("rel").map(|s| &**s) == Some("hub"))
             .filter_map(|mut elm| elm.attrs.remove("href"))
     })
+}
+
+fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
+    let mut ret = Response::default();
+    *ret.status_mut() = status;
+    ret
 }
 
 fn log_and_discard_error<T, E>(result: Result<T, E>)

@@ -26,7 +26,7 @@ macro_rules! serde_delegate {
 }
 
 pub mod consts {
-    use http::header::HeaderValue;
+    use http::header::{HeaderName, HeaderValue};
 
     // <https://github.com/rust-lang/rust-clippy/issues/5812>
     #[allow(clippy::declare_interior_mutable_const)]
@@ -35,7 +35,8 @@ pub mod consts {
     #[cfg(all(test, feature = "diesel2"))]
     #[allow(clippy::declare_interior_mutable_const)]
     pub const APPLICATION_ATOM_XML: HeaderValue = HeaderValue::from_static("application/atom+xml");
-    pub const HUB_SIGNATURE: &str = "x-hub-signature";
+    #[allow(clippy::declare_interior_mutable_const)]
+    pub const HUB_SIGNATURE: HeaderName = HeaderName::from_static("x-hub-signature");
     pub const NS_ATOM: &str = "http://www.w3.org/2005/Atom";
     pub const NS_MRSS: &str = "http://search.yahoo.com/mrss/";
 }
