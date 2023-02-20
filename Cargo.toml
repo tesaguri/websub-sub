@@ -44,14 +44,14 @@ tokio-test = "0.4"
 tower = { version = "0.4", default-features = false, features = ["util"] }
 tower-service = "0.3"
 
-# `diesel1` feature
-diesel = { version = "1.4.3", default-features = false, optional = true }
+# `diesel2` feature
+diesel = { version = "~2.0", default-features = false, optional = true }
 
 [features]
-diesel1 = ["diesel/r2d2"]
+diesel2 = ["diesel/i-implement-a-third-party-backend-and-opt-into-breaking-changes", "diesel/r2d2"]
 
 [dev-dependencies]
 anyhow = "1"
-diesel = { version = "1.4.3", default-features = false, features = ["sqlite"] }
-diesel_migrations = { version = "1", default-features = false, features = ["sqlite"] }
+diesel = { version = "~2.0", default-features = false, features = ["sqlite"] }
+diesel_migrations = { version = "~2.0", default-features = false, features = ["sqlite"] }
 hyper = { version = "0.14", features = ["client", "tcp"] }

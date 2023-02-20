@@ -4,10 +4,10 @@ use cfg_if::cfg_if;
 
 cfg_if! {
     if #[cfg(test)] {
-        #[cfg(feature = "diesel1")]
+        #[cfg(feature = "diesel2")]
         mod sleep;
 
-        #[cfg(feature = "diesel1")]
+        #[cfg(feature = "diesel2")]
         pub use self::sleep::*;
 
         pub fn instant_now() -> Instant {

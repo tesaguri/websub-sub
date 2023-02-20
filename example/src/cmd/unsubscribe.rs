@@ -17,15 +17,15 @@ pub struct Opt {
 
 pub async fn main(opt: Opt) -> anyhow::Result<()> {
     let client = crate::common::http_client();
-    let conn = Connection::new(crate::common::open_database()?);
+    let mut conn = Connection::new(crate::common::open_database()?);
 
     let tasks: FuturesUnordered<_> = if let Some(hub) = opt.hub {
-        conn.transaction(|| {
+        conn.transaction(|conn| {
             let ids = subscriptions::table
                 .filter(subscriptions::hub.eq(&hub))
                 .filter(subscriptions::topic.eq(&opt.topic))
                 .select(subscriptions::id)
-                .load::<i64>(conn.as_ref())?;
+                .load::<i64>(conn.as_mut())?;
             ids.into_iter()
                 .map(|id| {
                     hub::unsubscribe(
@@ -34,18 +34,18 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
                         hub.clone(),
                         opt.topic.clone(),
                         client.clone(),
-                        &conn,
+                        conn,
                     )
                     .map(tokio::spawn)
                 })
                 .collect()
         })?
     } else {
-        conn.transaction(|| {
+        conn.transaction(|conn| {
             let subscriptions = subscriptions::table
                 .filter(subscriptions::topic.eq(&opt.topic))
                 .select((subscriptions::id, subscriptions::hub))
-                .load::<(i64, String)>(conn.as_ref())?;
+                .load::<(i64, String)>(conn.as_mut())?;
             subscriptions
                 .into_iter()
                 .map(|(id, hub)| {
@@ -55,7 +55,7 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
                         hub,
                         opt.topic.clone(),
                         client.clone(),
-                        &conn,
+                        conn,
                     )
                     .map(tokio::spawn)
                 })

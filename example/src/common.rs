@@ -27,8 +27,8 @@ impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for ConnectionCu
 }
 
 pub fn open_database() -> anyhow::Result<SqliteConnection> {
-    let conn = SqliteConnection::establish(DB_URL)?;
-    on_acquire(&conn)?;
+    let mut conn = SqliteConnection::establish(DB_URL)?;
+    on_acquire(&mut conn)?;
     Ok(conn)
 }
 
@@ -44,7 +44,7 @@ pub fn http_client() -> Client<HttpsConnector<HttpConnector>> {
     Client::builder().build(HttpsConnector::new())
 }
 
-fn on_acquire(conn: &SqliteConnection) -> diesel::QueryResult<()> {
+fn on_acquire(conn: &mut SqliteConnection) -> diesel::QueryResult<()> {
     // The value of `5000` ms is taken from `rusqlite`'s default.
     // <https://github.com/diesel-rs/diesel/issues/2365#issuecomment-719467312>
     // <https://github.com/rusqlite/rusqlite/commit/05b03ae2cec9f9f630095d5c0e89682da334f4a4>

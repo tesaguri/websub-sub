@@ -1,15 +1,11 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-#[cfg(feature = "diesel1")]
-#[macro_use]
-extern crate diesel;
-
 pub mod db;
 pub mod feed;
 pub mod hub;
 pub mod subscriber;
 
-#[cfg(feature = "diesel1")]
+#[cfg(feature = "diesel2")]
 mod schema;
 mod util;
 
@@ -27,8 +23,8 @@ pub enum Error<PE, CE, SE, BE> {
 
 #[doc(hidden)]
 pub mod _private {
-    #[cfg(feature = "diesel1")]
-    pub extern crate diesel as diesel1;
-    #[cfg(feature = "diesel1")]
+    #[cfg(feature = "diesel2")]
+    pub extern crate diesel as diesel2;
+    #[cfg(feature = "diesel2")]
     pub extern crate rand;
 }

@@ -156,7 +156,7 @@ where
         &self,
         hub: String,
         topic: String,
-        conn: &C,
+        conn: &mut C,
     ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error>,
@@ -164,7 +164,7 @@ where
         hub::subscribe(&self.callback, hub, topic, self.client.clone(), conn)
     }
 
-    pub fn renew_subscriptions<C>(&self, conn: &C) -> Result<(), C::Error>
+    pub fn renew_subscriptions<C>(&self, conn: &mut C) -> Result<(), C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error> + 'static,
     {
@@ -173,7 +173,7 @@ where
             .try_into()
             .unwrap();
 
-        conn.transaction(|| {
+        conn.transaction(|conn| {
             let expiring = conn.get_subscriptions_expire_before(threshold)?;
 
             if expiring.is_empty() {
@@ -212,7 +212,7 @@ where
         id: u64,
         hub: String,
         topic: String,
-        conn: &C,
+        conn: &mut C,
     ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error>,
@@ -369,7 +369,7 @@ where
         &self,
         id: u64,
         query: &str,
-        conn: &C,
+        conn: &mut C,
     ) -> Result<Response<Full<Bytes>>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error> + 'static,
@@ -392,12 +392,12 @@ where
 
                     self.handle.hasten(self.refresh_time(expires_at as u64));
 
-                    conn.transaction(|| {
+                    conn.transaction(|conn| {
                         // Remove old subscriptions if any.
                         for id in conn.get_old_subscriptions(id, &hub, &topic)? {
                             log::info!("Removing the old subscription");
                             let task = self
-                                .unsubscribe(id as u64, hub.clone(), topic.clone(), conn)?
+                                .unsubscribe(id, hub.clone(), topic.clone(), conn)?
                                 .map(log_and_discard_error);
                             tokio::spawn(task);
                         }

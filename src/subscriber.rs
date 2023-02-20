@@ -259,10 +259,9 @@ fn prepare_callback_prefix(prefix: Uri) -> Uri {
     }
 }
 
-#[cfg(all(test, feature = "diesel1"))]
+#[cfg(all(test, feature = "diesel2"))]
 mod tests {
     use std::convert::Infallible;
-    use std::io;
     use std::str;
     use std::time::Duration;
 
@@ -271,6 +270,7 @@ mod tests {
     use diesel::prelude::*;
     use diesel::r2d2::ConnectionManager;
     use diesel::SqliteConnection;
+    use diesel_migrations::{FileBasedMigrations, MigrationHarness};
     use futures::channel::oneshot;
     use futures::future;
     use hmac::{Hmac, Mac};
@@ -294,7 +294,7 @@ mod tests {
 
     use super::*;
 
-    crate::db::diesel1::define_connection! {
+    crate::db::diesel2::define_connection! {
         subscriptions::table {
             id: subscriptions::id,
             hub: subscriptions::hub,
@@ -340,8 +340,8 @@ mod tests {
             .max_size(1)
             .build(ConnectionManager::<SqliteConnection>::new(":memory:"))
             .unwrap();
-        let conn = pool.get().unwrap();
-        run_migrations(&*conn);
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn);
 
         let expiry1 = begin + MARGIN.as_secs() as i64 + 1;
         let expiry2 = expiry1 + MARGIN.as_secs() as i64;
@@ -361,7 +361,7 @@ mod tests {
         ];
         insert_into(subscriptions::table)
             .values(&values[..])
-            .execute(&*conn)
+            .execute(&mut *conn)
             .unwrap();
 
         drop(conn);
@@ -672,11 +672,11 @@ mod tests {
 
         let id = callback.path().rsplit('/').next().unwrap();
         let id = crate::util::callback_id::decode(id).unwrap() as i64;
-        let conn = subscriber.service.pool.get().unwrap();
+        let mut conn = subscriber.service.pool.get().unwrap();
 
         let row = subscriptions::table.find(id);
         assert!(!select(exists(row))
-            .get_result::<bool>(conn.as_ref())
+            .get_result::<bool>(conn.as_mut())
             .unwrap());
     }
 
@@ -694,7 +694,7 @@ mod tests {
             .max_size(1)
             .build(ConnectionManager::new(":memory:"))
             .unwrap();
-        run_migrations(&*pool.get().unwrap());
+        run_migrations(&mut pool.get().unwrap());
         prepare_subscriber_with_pool(Pool::from(pool))
     }
 
@@ -735,19 +735,9 @@ mod tests {
         (subscriber, hub_client, hub_listener)
     }
 
-    // XXX: This could be written much shorter with
-    // `diesel_migrations::run_pending_migrations_in_directory` but it is `#[doc(hidden)]`.
-    fn run_migrations(conn: &SqliteConnection) {
-        let dir = diesel_migrations::find_migrations_directory().unwrap();
-        let migrations = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(Result::unwrap)
-            .filter_map(|e| {
-                (!e.file_name().to_string_lossy().starts_with('.'))
-                    .then(|| diesel_migrations::migration_from(e.path()).unwrap())
-            })
-            .collect::<Vec<_>>();
-        diesel_migrations::run_migrations(conn, migrations, &mut io::sink()).unwrap();
+    fn run_migrations(conn: &mut SqliteConnection) {
+        let source = FileBasedMigrations::find_migrations_directory().unwrap();
+        conn.run_pending_migrations(source).unwrap();
     }
 
     async fn accept_request<'a>(

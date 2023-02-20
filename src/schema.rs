@@ -1,4 +1,4 @@
-table! {
+diesel::table! {
     subscriptions (id) {
         id -> BigInt,
         hub -> Text,

@@ -64,7 +64,7 @@ pub fn subscribe<C, S, B>(
     hub: String,
     topic: String,
     client: S,
-    conn: &C,
+    conn: &mut C,
 ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
 where
     C: Connection,
@@ -72,7 +72,7 @@ where
     B: From<Vec<u8>>,
 {
     let (id, secret) = match create_subscription(&hub, &topic, conn) {
-        Ok((id, secret)) => (id as u64, secret),
+        Ok((id, secret)) => (id, secret),
         Err(e) => return Err(e),
     };
 
@@ -94,7 +94,7 @@ pub fn unsubscribe<C, S, B>(
     hub: String,
     topic: String,
     client: S,
-    conn: &C,
+    conn: &mut C,
 ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
 where
     C: Connection,
@@ -154,7 +154,7 @@ where
     })
 }
 
-fn create_subscription<C>(hub: &str, topic: &str, conn: &C) -> Result<(u64, Secret), C::Error>
+fn create_subscription<C>(hub: &str, topic: &str, conn: &mut C) -> Result<(u64, Secret), C::Error>
 where
     C: Connection,
 {

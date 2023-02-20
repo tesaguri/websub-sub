@@ -1,6 +1,6 @@
 use crate::schema::*;
 
-websub_sub::db::diesel1::define_connection! {
+websub_sub::db::diesel2::define_connection! {
     subscriptions::table {
         id: subscriptions::id,
         hub: subscriptions::hub,
