@@ -1,11 +1,18 @@
 use crate::schema::*;
 
-websub_sub::db::diesel2::define_connection! {
-    subscriptions::table {
-        id: subscriptions::id,
-        hub: subscriptions::hub,
-        topic: subscriptions::topic,
-        secret: subscriptions::secret,
-        expires_at: subscriptions::expires_at,
-    }
-}
+pub type Connection<C> = websub_sub::db::diesel2::Connection<
+    C,
+    subscriptions::id,
+    subscriptions::hub,
+    subscriptions::topic,
+    subscriptions::secret,
+    subscriptions::expires_at,
+>;
+pub type Pool<M> = websub_sub::db::diesel2::Pool<
+    M,
+    subscriptions::id,
+    subscriptions::hub,
+    subscriptions::topic,
+    subscriptions::secret,
+    subscriptions::expires_at,
+>;

@@ -20,11 +20,3 @@ pub enum Error<PE, CE, SE, BE> {
     #[error("failed to read the HTTP response body")]
     Body(#[source] BE),
 }
-
-#[doc(hidden)]
-pub mod _private {
-    #[cfg(feature = "diesel2")]
-    pub extern crate diesel as diesel2;
-    #[cfg(feature = "diesel2")]
-    pub extern crate rand;
-}

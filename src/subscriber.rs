@@ -297,20 +297,16 @@ mod tests {
 
     use super::*;
 
-    crate::db::diesel2::define_connection! {
-        subscriptions::table {
-            id: subscriptions::id,
-            hub: subscriptions::hub,
-            topic: subscriptions::topic,
-            secret: subscriptions::secret,
-            expires_at: subscriptions::expires_at,
-        }
-        pool GenericPool;
-    }
-
     type Body = Full<Bytes>;
     type Client = hyper::Client<Connector, Body>;
-    type Pool = GenericPool<ConnectionManager<SqliteConnection>>;
+    type Pool = crate::db::diesel2::Pool<
+        ConnectionManager<SqliteConnection>,
+        subscriptions::id,
+        subscriptions::hub,
+        subscriptions::topic,
+        subscriptions::secret,
+        subscriptions::expires_at,
+    >;
 
     const TOPIC: &str = "http://example.com/feed.xml";
     const HUB: &str = "http://example.com/hub";
