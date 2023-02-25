@@ -1,5 +1,6 @@
 mod cmd;
 mod common;
+mod feed;
 mod schema;
 mod websub;
 

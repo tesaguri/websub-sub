@@ -3,11 +3,13 @@ use std::io::{self, stdout, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 
-use futures::{future, Stream, TryStreamExt};
+use futures::{Stream, TryStreamExt};
+use hyper::header::CONTENT_TYPE;
 use hyper::Uri;
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
-
 use websub_sub::subscriber::Subscriber;
+
+use crate::feed::{self, Feed};
 
 #[derive(clap::Args)]
 pub struct Opt {
@@ -60,30 +62,63 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
 }
 
 async fn print_all(
-    s: impl Stream<Item = io::Result<(String, websub_sub::feed::Feed)>>,
+    s: impl Stream<Item = io::Result<websub_sub::subscriber::Update>>,
 ) -> io::Result<()> {
     let stdout = stdout();
-    let mut stdout = stdout.lock();
 
-    s.try_for_each(|(_topic, feed)| {
-        let result = (|| {
-            writeln!(stdout, "Feed: {} ({})", feed.title, feed.id)?;
-            for e in feed.entries {
-                stdout.write_all(b"Entry:")?;
-                if let Some(title) = e.title {
-                    write!(stdout, " {}", title)?;
+    s.try_for_each(|update| {
+        let stdout = &stdout;
+        async move {
+            let mut stdout = stdout.lock();
+
+            let mime = if let Some(v) = update.headers.get(CONTENT_TYPE) {
+                if let Some(mime) = v.to_str().ok().and_then(|s| s.parse().ok()) {
+                    mime
+                } else {
+                    writeln!(
+                        stdout,
+                        "Topic {}: unsupported media type `{:?}`",
+                        update.topic, v
+                    )
+                    .unwrap();
+                    return Ok(());
                 }
-                if let Some(id) = e.id {
-                    write!(stdout, " (ID: {})", id)?;
+            } else {
+                feed::MediaType::Xml
+            };
+
+            let body = match hyper::body::to_bytes(update.content).await {
+                Ok(body) => body,
+                Err(e) => {
+                    writeln!(stdout, "error reading request body: {}", e).unwrap();
+                    return Ok(());
                 }
-                if let Some(link) = e.link {
-                    write!(stdout, " (link: {})", link)?;
+            };
+
+            let feed = if let Some(feed) = Feed::parse(mime, &body) {
+                feed
+            } else {
+                writeln!(stdout, "failed to parse request body as feed").unwrap();
+                return Ok(());
+            };
+
+            writeln!(stdout, "Feed: {} ({})", feed.title, feed.id).unwrap();
+            for e in &feed.entries[..] {
+                stdout.write_all(b"Entry:").unwrap();
+                if let Some(ref title) = e.title {
+                    write!(stdout, " {}", title).unwrap();
                 }
-                stdout.write_all(b"\n")?;
+                if let Some(ref id) = e.id {
+                    write!(stdout, " (ID: {})", id).unwrap();
+                }
+                if let Some(ref link) = e.link {
+                    write!(stdout, " (link: {})", link).unwrap();
+                }
+                stdout.write_all(b"\n").unwrap();
             }
+
             Ok(())
-        })();
-        future::ready(result)
+        }
     })
     .await
 }

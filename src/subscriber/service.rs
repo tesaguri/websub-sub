@@ -1,37 +1,29 @@
-use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::future;
 use std::marker::PhantomData;
-use std::mem;
 use std::task::{Context, Poll};
 
-use auto_enums::auto_enum;
 use bytes::Bytes;
 use futures::channel::mpsc;
-use futures::{Future, FutureExt, TryFutureExt, TryStreamExt};
-use hmac::digest::generic_array::typenum::Unsigned;
-use hmac::{Hmac, Mac};
-use http::header::CONTENT_TYPE;
+use futures::{Future, FutureExt};
 use http::{Request, Response, StatusCode, Uri};
 use http_body::{Body, Full};
-use sha1::digest::OutputSizeUser;
-use sha1::Sha1;
-use tower::ServiceExt;
 
 use crate::db::{Connection, Pool};
-use crate::feed::{self, Feed, RawFeed};
 use crate::hub;
-use crate::util::{self, consts::HUB_SIGNATURE, now_unix, CollectBody, HttpService, Never};
+use crate::signature::{self, Signature};
+use crate::util::{consts::HUB_SIGNATURE, now_unix, HttpService, Never};
 use crate::Error;
 
 use super::scheduler;
+use super::update::{self, Update};
 
 pub struct Service<P, S, B> {
     pub(super) callback: Uri,
     pub(super) renewal_margin: u64,
     pub(super) client: S,
     pub(super) pool: P,
-    pub(super) tx: mpsc::Sender<(String, Feed)>,
+    pub(super) tx: mpsc::Sender<Update>,
     pub(super) handle: scheduler::Handle,
     pub(super) marker: PhantomData<fn() -> B>,
 }
@@ -46,112 +38,6 @@ where
     S::Error: Debug + Send,
     B: Default + From<Vec<u8>> + Send + 'static,
 {
-    pub fn discover_and_subscribe(
-        &self,
-        topic: String,
-    ) -> impl Future<
-        Output = Result<
-            (),
-            Error<
-                P::Error,
-                <P::Connection as Connection>::Error,
-                S::Error,
-                <S::ResponseBody as Body>::Error,
-            >,
-        >,
-    > {
-        let callback = self.callback.clone();
-        let client = self.client.clone();
-        let pool = self.pool.clone();
-        self.discover(topic).map(|result| {
-            result.and_then(move |(topic, hubs)| {
-                if let Some(hubs) = hubs {
-                    let mut conn = try_pool!(pool.get());
-                    for hub in hubs {
-                        let task = try_conn!(hub::subscribe(
-                            &callback,
-                            hub,
-                            topic.clone(),
-                            client.clone(),
-                            &mut conn,
-                        ));
-                        tokio::spawn(task);
-                    }
-                }
-                Ok(())
-            })
-        })
-    }
-
-    #[auto_enum]
-    pub fn discover(
-        &self,
-        topic: String,
-    ) -> impl Future<
-        Output = Result<
-            (String, Option<impl Iterator<Item = String>>),
-            Error<
-                P::Error,
-                <P::Connection as Connection>::Error,
-                S::Error,
-                <S::ResponseBody as Body>::Error,
-            >,
-        >,
-    >
-    where
-        B: Default,
-    {
-        log::info!("Attempting to discover WebSub hubs for topic {}", topic);
-
-        let req = http::Request::get(&*topic).body(B::default()).unwrap();
-        let mut tx = self.tx.clone();
-        self.client
-            .clone()
-            .into_service()
-            .oneshot(req)
-            .map_err(Error::Service)
-            .and_then(|res| async move {
-                // TODO: Web Linking discovery
-
-                let kind = if let Some(v) = res.headers().get(CONTENT_TYPE) {
-                    if let Some(m) = v.to_str().ok().and_then(|s| s.parse().ok()) {
-                        m
-                    } else {
-                        log::warn!("Topic {}: unsupported media type `{:?}`", topic, v);
-                        return Ok((topic, None));
-                    }
-                } else {
-                    feed::MediaType::Xml
-                };
-
-                let body = try_body!(CollectBody::new(res.into_body()).await);
-
-                if let Some(mut feed) = RawFeed::parse(kind, &body) {
-                    #[auto_enum(Iterator)]
-                    let hubs = match feed {
-                        RawFeed::Atom(ref mut feed) => mem::take(&mut feed.links)
-                            .into_iter()
-                            .filter(|link| link.rel == "hub")
-                            .map(|link| link.href),
-                        RawFeed::Rss(ref mut channel) => rss_hub_links(
-                            mem::take(&mut channel.extensions),
-                            mem::take(&mut channel.namespaces),
-                        ),
-                    };
-                    if let Err(e) = tx.start_send((topic.clone(), feed.into())) {
-                        // A `Sender` has a guaranteed slot in the channel capacity
-                        // so it won't return a `full` error in this case.
-                        // https://docs.rs/futures/0.3.17/futures/channel/mpsc/fn.channel.html
-                        debug_assert!(e.is_disconnected());
-                    }
-                    Ok((topic, Some(hubs)))
-                } else {
-                    log::warn!("Topic {}: failed to parse the content", topic);
-                    Ok((topic, None))
-                }
-            })
-    }
-
     pub fn subscribe<C>(
         &self,
         hub: String,
@@ -224,15 +110,7 @@ where
     fn call(
         &self,
         req: Request<hyper::Body>,
-    ) -> Result<
-        Response<Full<Bytes>>,
-        Error<
-            P::Error,
-            <P::Connection as Connection>::Error,
-            S::Error,
-            <S::ResponseBody as Body>::Error,
-        >,
-    >
+    ) -> Result<Response<Full<Bytes>>, Error<P::Error, <P::Connection as Connection>::Error>>
     where
         S::Error: Debug,
     {
@@ -254,51 +132,34 @@ where
                 .map_err(Error::Connection);
         }
 
-        let kind: feed::MediaType = if let Some(m) = req
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse().ok())
-        {
-            m
-        } else {
-            return Ok(empty_response(StatusCode::UNSUPPORTED_MEDIA_TYPE));
-        };
-
         let signature_header = if let Some(v) = req.headers().get(HUB_SIGNATURE) {
-            v.as_bytes()
+            v
         } else {
             log::debug!("Callback {}: missing signature", id);
             // The WebSub spec doesn't seem to specify appropriate error code in this case
             return Ok(Response::default());
         };
 
-        let pos = memchr::memchr(b'=', signature_header);
-        let (method, signature_hex) = if let Some(i) = pos {
-            let (method, hex) = signature_header.split_at(i);
-            (method, &hex[1..])
-        } else {
-            log::debug!("Callback {}: malformed signature", id);
-            return Ok(empty_response(StatusCode::BAD_REQUEST));
-        };
-
-        let signature = match method {
-            b"sha1" => {
-                const LEN: usize = <<Sha1 as OutputSizeUser>::OutputSize as Unsigned>::USIZE;
-                let mut buf = [0_u8; LEN];
-                if hex::decode_to_slice(signature_hex, &mut buf).is_err() {
-                    return Ok(empty_response(StatusCode::BAD_REQUEST));
-                }
-                buf
+        let signature = match Signature::parse(signature_header.as_bytes()) {
+            Ok(signature) => signature,
+            Err(signature::SerializeError::Parse) => {
+                log::debug!(
+                    "Callback {}: malformed signature: {:?}",
+                    id,
+                    signature_header
+                );
+                return Ok(empty_response(StatusCode::BAD_REQUEST));
             }
-            _ => {
+            Err(signature::SerializeError::UnknownMethod(method)) => {
                 let method = String::from_utf8_lossy(method);
                 log::debug!("Callback {}: unknown digest algorithm: {}", id, method);
                 return Ok(empty_response(StatusCode::NOT_ACCEPTABLE));
             }
         };
 
-        let (topic, mac) = {
+        let (parts, body) = req.into_parts();
+
+        let (topic, content) = {
             let cols = try_conn!(conn.get_topic(id));
             let (topic, secret) = if let Some(cols) = cols {
                 cols
@@ -307,37 +168,20 @@ where
                 // a previously removed subscription.
                 return Ok(empty_response(StatusCode::GONE));
             };
-            let mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).unwrap();
-            (topic, mac)
+            let content = update::Content::new(body, signature, secret.as_bytes());
+            (topic, content)
         };
 
-        let mut tx = self.tx.clone();
-        let verify_signature = req
-            .into_body()
-            .try_fold((Vec::new(), mac), move |(mut vec, mut mac), chunk| {
-                vec.extend(&*chunk);
-                mac.update(&chunk);
-                future::ready(Ok((vec, mac)))
-            })
-            .map_ok(move |(content, mac)| {
-                let code = mac.finalize().into_bytes();
-                if *code == signature {
-                    let feed = if let Some(feed) = Feed::parse(kind, &content) {
-                        feed
-                    } else {
-                        log::warn!("Failed to parse an updated content of topic {}", topic);
-                        return;
-                    };
-                    if let Err(e) = tx.start_send((topic, feed)) {
-                        debug_assert!(e.is_disconnected());
-                    }
-                } else {
-                    log::debug!("Callback {}: signature mismatch", id);
-                }
-            })
-            .map_err(move |e| log::debug!("Callback {}: failed to load request body: {:?}", id, e))
-            .map(|_| ());
-        tokio::spawn(verify_signature);
+        if let Err(e) = self.tx.clone().start_send(Update {
+            topic: topic.into(),
+            headers: parts.headers,
+            content,
+        }) {
+            // A `Sender` has a guaranteed slot in the channel capacity
+            // so it won't return a `full` error in this case.
+            // https://docs.rs/futures/0.3.17/futures/channel/mpsc/fn.channel.html
+            debug_assert!(e.is_disconnected());
+        }
 
         Ok(Response::default())
     }
@@ -440,33 +284,6 @@ where
             }
         }
     }
-}
-
-fn rss_hub_links(
-    extensions: rss::extension::ExtensionMap,
-    namespaces: BTreeMap<String, String>,
-) -> impl Iterator<Item = String> {
-    extensions.into_iter().flat_map(move |(prefix, map)| {
-        let prefix_is_atom = namespaces
-            .get(&*prefix)
-            .map_or(false, |s| s == util::consts::NS_ATOM);
-        map.into_iter()
-            .filter(|(name, _)| (name == "link"))
-            .flat_map(|(_, elms)| elms)
-            .filter(move |elm| {
-                if let Some((_, ns)) = elm
-                    .attrs
-                    .iter()
-                    .find(|(k, _)| k.strip_prefix("xmlns:") == Some(&prefix))
-                {
-                    ns == util::consts::NS_ATOM
-                } else {
-                    prefix_is_atom
-                }
-            })
-            .filter(|elm| elm.attrs.get("rel").map(|s| &**s) == Some("hub"))
-            .filter_map(|mut elm| elm.attrs.remove("href"))
-    })
 }
 
 fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {

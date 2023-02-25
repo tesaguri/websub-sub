@@ -16,17 +16,12 @@ macro_rules! try_conn {
     };
 }
 
-macro_rules! try_body {
-    ($result:expr $(,)?) => {
-        match $result {
-            Ok(x) => x,
-            Err(e) => return Err($crate::Error::Body(e)),
-        }
-    };
-}
+pub mod update;
 
 mod scheduler;
 mod service;
+
+pub use self::update::Update;
 
 use std::fmt::Debug;
 use std::marker::{PhantomData, Unpin};
@@ -44,7 +39,6 @@ use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::db::{Connection, Pool};
-use crate::feed::Feed;
 use crate::util::{ArcService, HttpService};
 use crate::Error;
 
@@ -57,7 +51,7 @@ pub struct Subscriber<P, S, B, I> {
     #[pin]
     incoming: I,
     server: Http,
-    rx: mpsc::Receiver<(String, Feed)>,
+    rx: mpsc::Receiver<Update>,
     service: Arc<Service<P, S, B>>,
 }
 
@@ -92,15 +86,7 @@ where
         callback: Uri,
         client: S,
         pool: P,
-    ) -> Result<
-        Self,
-        Error<
-            P::Error,
-            <P::Connection as Connection>::Error,
-            S::Error,
-            <S::ResponseBody as Body>::Error,
-        >,
-    > {
+    ) -> Result<Self, Error<P::Error, <P::Connection as Connection>::Error>> {
         Subscriber::builder().build(incoming, callback, client, pool)
     }
 
@@ -135,7 +121,7 @@ where
     I: TryStream,
     I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    type Item = Result<(String, Feed), I::Error>;
+    type Item = Result<Update, I::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         log::trace!("Subscriber::poll_next");
@@ -175,15 +161,7 @@ impl Builder {
         callback: Uri,
         client: S,
         pool: P,
-    ) -> Result<
-        Subscriber<P, S, B, I>,
-        Error<
-            P::Error,
-            <P::Connection as Connection>::Error,
-            S::Error,
-            <S::ResponseBody as Body>::Error,
-        >,
-    >
+    ) -> Result<Subscriber<P, S, B, I>, Error<P::Error, <P::Connection as Connection>::Error>>
     where
         P: Pool,
         P::Error: Debug,
@@ -279,14 +257,13 @@ mod tests {
     use hmac::{Hmac, Mac};
     use http::header::CONTENT_TYPE;
     use http::Uri;
-    use http::{Method, Request, Response, StatusCode};
+    use http::{Request, Response, StatusCode};
     use http_body::Full;
     use hyper::server::conn::Http;
     use hyper::service;
     use sha1::Sha1;
 
     use crate::db::Pool as _;
-    use crate::feed;
     use crate::hub;
     use crate::schema::*;
     use crate::util::connection::{Connector, Listener};
@@ -310,7 +287,8 @@ mod tests {
 
     const TOPIC: &str = "http://example.com/feed.xml";
     const HUB: &str = "http://example.com/hub";
-    const FEED: &str = include_str!("subscriber/testcases/feed.xml");
+    #[allow(clippy::declare_interior_mutable_const)]
+    const CONTENT: Bytes = Bytes::from_static(b"<feed><title>Example feed</title></feed>");
     const MARGIN: Duration = Duration::from_secs(42);
     /// Network delay for communications between the subscriber and the hub.
     const DELAY: Duration = Duration::from_millis(1);
@@ -505,51 +483,13 @@ mod tests {
         let hub = Http::new();
         listener.enter(|cx, listener| assert!(listener.poll_next(cx).is_pending()));
 
-        // Discover the hub from the feed.
-
-        let task = tokio::spawn(subscriber.service.discover(TOPIC.to_owned()));
-
-        tokio::time::advance(DELAY).await;
-        let sock = listener.next().timeout().await.unwrap().unwrap();
-        hub.serve_connection(
-            sock,
-            service::service_fn(|req| async move {
-                assert_eq!(req.method(), Method::GET);
-                assert_eq!(req.uri().path_and_query().unwrap(), "/feed.xml");
-                let res = Response::builder()
-                    .header(CONTENT_TYPE, APPLICATION_ATOM_XML)
-                    .body(Full::new(Bytes::from_static(FEED.as_bytes())))
-                    .unwrap();
-                tokio::time::advance(DELAY).await;
-                Ok::<_, Infallible>(res)
-            }),
-        )
-        .timeout()
-        .await
-        .unwrap();
-        listener.enter(|cx, listener| assert!(listener.poll_next(cx).is_pending()));
-
-        // `subscriber` yields the contents of `feed.xml`.
-        assert_eq!(
-            subscriber.next().await.unwrap().unwrap(),
-            (
-                TOPIC.to_owned(),
-                Feed::parse(feed::MediaType::Xml, FEED.as_bytes()).unwrap()
-            )
-        );
-
-        let (topic, hubs) = task.timeout().await.unwrap().unwrap();
-        assert_eq!(topic, TOPIC);
-        let hubs = hubs.unwrap().collect::<Vec<_>>();
-        assert_eq!(hubs, [HUB]);
-
         // Subscribe to the topic.
 
         let req_task = subscriber
             .service
             .subscribe(
                 HUB.to_owned(),
-                topic,
+                TOPIC.to_owned(),
                 &mut subscriber.service.pool.get().unwrap(),
             )
             .unwrap();
@@ -586,12 +526,13 @@ mod tests {
         // Content distribution.
 
         let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).unwrap();
-        mac.update(FEED.as_bytes());
+        #[allow(clippy::borrow_interior_mutable_const)]
+        mac.update(&CONTENT);
         let signature = mac.finalize().into_bytes();
         let req = Request::post(&callback)
             .header(CONTENT_TYPE, APPLICATION_ATOM_XML)
             .header(HUB_SIGNATURE, format!("sha1={}", hex::encode(&*signature)))
-            .body(Full::new(Bytes::from_static(FEED.as_bytes())))
+            .body(Full::new(CONTENT))
             .unwrap();
         let task = client.request(req);
         let (res, update) = future::join(task, subscriber.next()).timeout().await;
@@ -599,12 +540,13 @@ mod tests {
         let res = res.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let (topic, feed) = update.unwrap().unwrap();
-        assert_eq!(topic, TOPIC);
-        assert_eq!(
-            feed,
-            Feed::parse(feed::MediaType::Xml, FEED.as_bytes()).unwrap()
-        );
+        let update = update.unwrap().unwrap();
+        assert_eq!(*update.topic, *TOPIC);
+        let body = hyper::body::to_bytes(update.content).await.unwrap();
+        assert_eq!(body, {
+            #[allow(clippy::borrow_interior_mutable_const)]
+            CONTENT
+        },);
 
         // Subscription renewal.
 

@@ -16,24 +16,20 @@ keywords = ["websub", "pubsubhubbub"]
 categories = ["web-programming"]
 
 [dependencies]
-atom = { version = "0.12", package = "atom_syndication" }
-auto_enums = "0.8"
 base64 = "0.21"
 bytes = "1"
 cfg-if = "1"
 futures = "0.3"
 hex = "0.4"
-hmac = "0.12"
+hmac = { version = "0.12", features = ["reset"] }
 http = "0.2"
 http-body = "0.4.2"
 http-serde = "1"
 hyper = { version = "0.14", features = ["http1", "http2", "server", "stream"] }
 log = "0.4"
 memchr = "2"
-mime = "0.3"
 pin-project = "1"
 rand = "0.8"
-rss = "2"
 serde = { version = "1", features = ["derive"] }
 serde_urlencoded = "0.7"
 sha1 = "0.10"

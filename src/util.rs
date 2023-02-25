@@ -37,8 +37,6 @@ pub mod consts {
     pub const APPLICATION_ATOM_XML: HeaderValue = HeaderValue::from_static("application/atom+xml");
     #[allow(clippy::declare_interior_mutable_const)]
     pub const HUB_SIGNATURE: HeaderName = HeaderName::from_static("x-hub-signature");
-    pub const NS_ATOM: &str = "http://www.w3.org/2005/Atom";
-    pub const NS_MRSS: &str = "http://search.yahoo.com/mrss/";
 }
 
 pub mod callback_id;
@@ -47,7 +45,6 @@ pub mod connection;
 pub mod http_service;
 pub mod time;
 
-mod collect_body;
 #[cfg(all(test, feature = "diesel2"))]
 mod first;
 
@@ -66,7 +63,6 @@ use futures::Future;
 use serde::{de, Deserialize};
 use tokio::io::ReadBuf;
 
-pub use self::collect_body::CollectBody;
 #[cfg(all(test, feature = "diesel2"))]
 pub use self::connection::connection;
 #[cfg(all(test, feature = "diesel2"))]
