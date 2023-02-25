@@ -51,7 +51,7 @@ pub struct Subscriber<P, S, B, I> {
     #[pin]
     incoming: I,
     server: Http,
-    rx: mpsc::Receiver<Update>,
+    rx: mpsc::UnboundedReceiver<Update>,
     service: Arc<Service<P, S, B>>,
 }
 
@@ -185,7 +185,7 @@ impl Builder {
 
         let callback = prepare_callback_prefix(callback);
 
-        let (tx, rx) = mpsc::channel(0);
+        let (tx, rx) = mpsc::unbounded();
 
         let service = Arc::new(service::Service {
             callback,

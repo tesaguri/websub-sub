@@ -23,7 +23,7 @@ pub struct Service<P, S, B> {
     pub(super) renewal_margin: u64,
     pub(super) client: S,
     pub(super) pool: P,
-    pub(super) tx: mpsc::Sender<Update>,
+    pub(super) tx: mpsc::UnboundedSender<Update>,
     pub(super) handle: scheduler::Handle,
     pub(super) marker: PhantomData<fn() -> B>,
 }
