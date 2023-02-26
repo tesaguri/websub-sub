@@ -62,7 +62,7 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
 }
 
 async fn print_all(
-    s: impl Stream<Item = io::Result<websub_sub::subscriber::Update>>,
+    s: impl Stream<Item = io::Result<websub_sub::subscriber::Update<hyper::Body>>>,
 ) -> io::Result<()> {
     let stdout = stdout();
 

@@ -12,31 +12,32 @@ use http_body::{Body, Full};
 use crate::db::{Connection, Pool};
 use crate::hub;
 use crate::signature::{self, Signature};
-use crate::util::{consts::HUB_SIGNATURE, now_unix, HttpService, Never};
+use crate::util::{consts::HUB_SIGNATURE, empty_response, now_unix, HttpService};
 use crate::Error;
 
 use super::scheduler;
 use super::update::{self, Update};
 
-pub struct Service<P, S, B> {
+pub struct Service<P, S, SB, CB> {
     pub(super) callback: Uri,
     pub(super) renewal_margin: u64,
     pub(super) client: S,
     pub(super) pool: P,
-    pub(super) tx: mpsc::UnboundedSender<Update>,
+    pub(super) tx: mpsc::UnboundedSender<Update<SB>>,
     pub(super) handle: scheduler::Handle,
-    pub(super) marker: PhantomData<fn() -> B>,
+    pub(super) marker: PhantomData<fn() -> CB>,
 }
 
-impl<P, S, B> Service<P, S, B>
+impl<P, S, SB, CB> Service<P, S, SB, CB>
 where
     P: Pool,
     P::Connection: 'static,
-    S: HttpService<B> + Clone + Send + 'static,
+    S: HttpService<CB> + Clone + Send + 'static,
     S::Future: Send,
     S::ResponseBody: Send,
     S::Error: Debug + Send,
-    B: Default + From<Vec<u8>> + Send + 'static,
+    SB: 'static,
+    CB: Default + From<Vec<u8>> + Send + 'static,
 {
     pub fn subscribe<C>(
         &self,
@@ -85,13 +86,13 @@ where
     }
 }
 
-impl<P, S, B> Service<P, S, B>
+impl<P, S, SB, CB> Service<P, S, SB, CB>
 where
     P: Pool,
-    S: HttpService<B> + Clone + Send + 'static,
+    S: HttpService<CB> + Clone + Send + 'static,
     S::Error: Debug,
     S::Future: Send,
-    B: From<Vec<u8>> + Send + 'static,
+    CB: From<Vec<u8>> + Send + 'static,
 {
     fn unsubscribe<C>(
         &self,
@@ -105,11 +106,21 @@ where
     {
         hub::unsubscribe(&self.callback, id, hub, topic, self.client.clone(), conn)
     }
+}
 
+impl<P, S, SB, CB> Service<P, S, SB, CB>
+where
+    P: Pool,
+    S: HttpService<CB> + Clone + Send + 'static,
+    S::Error: Debug,
+    S::Future: Send,
+    SB: Send + 'static,
+    CB: From<Vec<u8>> + Send + 'static,
+{
     #[allow(clippy::type_complexity)]
-    fn call(
+    pub(crate) fn call(
         &self,
-        req: Request<hyper::Body>,
+        req: Request<SB>,
     ) -> Result<Response<Full<Bytes>>, Error<P::Error, <P::Connection as Connection>::Error>>
     where
         S::Error: Debug,
@@ -243,53 +254,40 @@ where
     }
 }
 
-impl<P, S, B> Service<P, S, B> {
-    pub fn refresh_time(&self, expires_at: u64) -> u64 {
+impl<P, S, SB, CB> Service<P, S, SB, CB> {
+    pub(crate) fn refresh_time(&self, expires_at: u64) -> u64 {
         expires_at - self.renewal_margin
     }
 }
 
-impl<P, S, B> AsRef<scheduler::Handle> for Service<P, S, B> {
+impl<P, S, SB, CB> AsRef<scheduler::Handle> for Service<P, S, SB, CB> {
     fn as_ref(&self) -> &scheduler::Handle {
         &self.handle
     }
 }
 
-impl<P, S, B> tower_service::Service<Request<hyper::Body>> for &Service<P, S, B>
+impl<P, S, SB, CB> tower_service::Service<Request<SB>> for &Service<P, S, SB, CB>
 where
     P: Pool,
-    P::Error: Debug,
-    <P::Connection as Connection>::Error: Debug,
-    S: HttpService<B> + Clone + Send + 'static,
+    S: HttpService<CB> + Clone + Send + 'static,
     <S::ResponseBody as Body>::Error: Debug,
     S::Error: Debug,
     S::Future: Send,
-    B: From<Vec<u8>> + Send + 'static,
+    SB: Send + 'static,
+    CB: From<Vec<u8>> + Send + 'static,
 {
     type Response = Response<Full<Bytes>>;
-    type Error = Never;
+    type Error = Error<P::Error, <P::Connection as Connection>::Error>;
     type Future = future::Ready<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request<hyper::Body>) -> Self::Future {
+    fn call(&mut self, req: Request<SB>) -> Self::Future {
         log::trace!("Service::call; req.uri()={:?}", req.uri());
-        match (*self).call(req) {
-            Ok(ret) => future::ready(Ok(ret)),
-            Err(e) => {
-                log::error!("error while serving an HTTP request: {:?}", e);
-                future::ready(Ok(empty_response(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
-        }
+        future::ready((*self).call(req))
     }
-}
-
-fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
-    let mut ret = Response::default();
-    *ret.status_mut() = status;
-    ret
 }
 
 fn log_and_discard_error<T, E>(result: Result<T, E>)

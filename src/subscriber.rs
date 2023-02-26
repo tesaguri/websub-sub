@@ -21,9 +21,12 @@ pub mod update;
 mod scheduler;
 mod service;
 
+pub use self::service::Service;
 pub use self::update::Update;
 
+use std::convert::Infallible;
 use std::fmt::Debug;
+use std::future;
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -39,11 +42,10 @@ use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::db::{Connection, Pool};
-use crate::util::{ArcService, HttpService};
+use crate::util::{empty_response, HttpService};
 use crate::Error;
 
 use self::scheduler::Scheduler;
-use self::service::Service;
 
 /// A WebSub subscriber server.
 #[pin_project]
@@ -51,8 +53,8 @@ pub struct Subscriber<P, S, B, I> {
     #[pin]
     incoming: I,
     server: Http,
-    rx: mpsc::UnboundedReceiver<Update>,
-    service: Arc<Service<P, S, B>>,
+    rx: mpsc::UnboundedReceiver<Update<hyper::Body>>,
+    service: Arc<Service<P, S, hyper::Body, B>>,
 }
 
 #[derive(Clone, Debug)]
@@ -96,13 +98,28 @@ where
             match option {
                 None => return Poll::Ready(Ok(())),
                 Some(sock) => {
-                    let service = ArcService(this.service.clone());
+                    let service = this.service.clone();
+                    let service = tower::service_fn(move |req| match (*service).call(req) {
+                        Ok(ret) => future::ready(Ok::<_, Infallible>(ret)),
+                        Err(e) => {
+                            log::error!("error while serving an HTTP request: {:?}", e);
+                            future::ready(Ok(empty_response(
+                                http::StatusCode::INTERNAL_SERVER_ERROR,
+                            )))
+                        }
+                    });
                     tokio::spawn(this.server.serve_connection(sock, service));
                 }
             }
         }
 
         Poll::Pending
+    }
+}
+
+impl<P, S, B, I> Subscriber<P, S, B, I> {
+    pub fn service(&self) -> &Arc<Service<P, S, hyper::Body, B>> {
+        &self.service
     }
 }
 
@@ -121,7 +138,7 @@ where
     I: TryStream,
     I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    type Item = Result<Update, I::Error>;
+    type Item = Result<Update<hyper::Body>, I::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         log::trace!("Subscriber::poll_next");
@@ -175,6 +192,40 @@ impl Builder {
         I: TryStream,
         I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
+        let (service, rx) = self.build_service(callback, client, pool)?;
+        Ok(Subscriber {
+            incoming,
+            server: Http::new(),
+            rx,
+            service,
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn build_service<P, S, SB, CB>(
+        &self,
+        callback: Uri,
+        client: S,
+        pool: P,
+    ) -> Result<
+        (
+            Arc<Service<P, S, SB, CB>>,
+            mpsc::UnboundedReceiver<Update<SB>>,
+        ),
+        Error<P::Error, <P::Connection as Connection>::Error>,
+    >
+    where
+        P: Pool,
+        P::Error: Debug,
+        <P::Connection as Connection>::Error: Debug,
+        S: HttpService<CB> + Clone + Send + Sync + 'static,
+        S::Error: Debug + Send,
+        S::Future: Send,
+        S::ResponseBody: Send,
+        <S::ResponseBody as Body>::Error: Debug,
+        SB: Send + 'static,
+        CB: Default + From<Vec<u8>> + Send + 'static,
+    {
         let renewal_margin = self.renewal_margin.as_secs();
 
         let first_tick = try_conn!(try_pool!(pool.get()).get_next_expiry()).map(|expires_at| {
@@ -207,12 +258,7 @@ impl Builder {
             })
         }));
 
-        Ok(Subscriber {
-            incoming,
-            server: Http::new(),
-            rx,
-            service,
-        })
+        Ok((service, rx))
     }
 }
 

@@ -55,11 +55,10 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::str;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use bytes::Bytes;
 use cfg_if::cfg_if;
-use futures::Future;
 use serde::{de, Deserialize};
 use tokio::io::ReadBuf;
 
@@ -72,8 +71,6 @@ pub use self::time::{instant_from_unix, instant_now, now_unix, system_time_now};
 #[cfg(all(test, feature = "diesel2"))]
 pub use self::time::{FutureTimeoutExt, Sleep};
 
-pub struct ArcService<S>(pub Arc<S>);
-
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub enum Maybe<T> {
@@ -83,24 +80,6 @@ pub enum Maybe<T> {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
 pub enum Never {}
-
-impl<S, T, R, E, F> tower_service::Service<T> for ArcService<S>
-where
-    for<'a> &'a S: tower_service::Service<T, Response = R, Error = E, Future = F>,
-    F: Future<Output = Result<R, E>>,
-{
-    type Response = R;
-    type Error = E;
-    type Future = F;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (&*self.0).poll_ready(cx)
-    }
-
-    fn call(&mut self, req: T) -> Self::Future {
-        (&*self.0).call(req)
-    }
-}
 
 impl Display for Never {
     fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -160,6 +139,12 @@ where
     }
 
     d.deserialize_str(Visitor::<T>(PhantomData))
+}
+
+pub fn empty_response(status: http::StatusCode) -> http::Response<http_body::Full<Bytes>> {
+    let mut ret = http::Response::default();
+    *ret.status_mut() = status;
+    ret
 }
 
 cfg_if! {
