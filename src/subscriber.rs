@@ -18,9 +18,11 @@ macro_rules! try_conn {
 
 pub mod update;
 
+mod renew_subscriptions;
 mod scheduler;
 mod service;
 
+pub use self::renew_subscriptions::RenewSubscriptions;
 pub use self::service::Service;
 pub use self::update::Update;
 
@@ -34,7 +36,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::channel::mpsc;
-use futures::{Stream, StreamExt, TryStream};
+use futures::{FutureExt, Stream, StreamExt, TryStream};
 use http::uri::{PathAndQuery, Uri};
 use http_body::Body;
 use hyper::server::conn::Http;
@@ -44,8 +46,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::db::{Connection, Pool};
 use crate::util::{empty_response, HttpService};
 use crate::Error;
-
-use self::scheduler::Scheduler;
 
 /// A WebSub subscriber server.
 #[pin_project]
@@ -89,7 +89,16 @@ where
         client: S,
         pool: P,
     ) -> Result<Self, Error<P::Error, <P::Connection as Connection>::Error>> {
-        Subscriber::builder().build(incoming, callback, client, pool)
+        let (subscriber, renew_subscriptions) =
+            Subscriber::builder().build(incoming, callback, client, pool)?;
+        let renew_subscriptions = renew_subscriptions.map(|result| match result {
+            Ok(()) => {}
+            Err(e) => {
+                log::error!("error while renewing a subscription: {:?}", e);
+            }
+        });
+        tokio::spawn(renew_subscriptions);
+        Ok(subscriber)
     }
 
     fn accept_all(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), I::Error>> {
@@ -178,7 +187,13 @@ impl Builder {
         callback: Uri,
         client: S,
         pool: P,
-    ) -> Result<Subscriber<P, S, B, I>, Error<P::Error, <P::Connection as Connection>::Error>>
+    ) -> Result<
+        (
+            Subscriber<P, S, B, I>,
+            RenewSubscriptions<P, S, hyper::Body, B>,
+        ),
+        Error<P::Error, <P::Connection as Connection>::Error>,
+    >
     where
         P: Pool,
         P::Error: Debug,
@@ -192,13 +207,14 @@ impl Builder {
         I: TryStream,
         I::Ok: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let (service, rx) = self.build_service(callback, client, pool)?;
-        Ok(Subscriber {
+        let (service, rx, renew_subscriptions) = self.build_service(callback, client, pool)?;
+        let subscriber = Subscriber {
             incoming,
             server: Http::new(),
             rx,
             service,
-        })
+        };
+        Ok((subscriber, renew_subscriptions))
     }
 
     #[allow(clippy::type_complexity)]
@@ -211,6 +227,7 @@ impl Builder {
         (
             Arc<Service<P, S, SB, CB>>,
             mpsc::UnboundedReceiver<Update<SB>>,
+            RenewSubscriptions<P, S, SB, CB>,
         ),
         Error<P::Error, <P::Connection as Connection>::Error>,
     >
@@ -248,17 +265,9 @@ impl Builder {
             marker: PhantomData,
         });
 
-        tokio::spawn(Scheduler::new(&service, move |service| {
-            let mut conn = service.pool.get().unwrap();
-            service.renew_subscriptions(&mut conn).unwrap();
-            conn.get_next_expiry().unwrap().map(|expires_at| {
-                expires_at
-                    .try_into()
-                    .map_or(0, |expires_at| service.refresh_time(expires_at))
-            })
-        }));
+        let renew_subscriptions = RenewSubscriptions::new(&service);
 
-        Ok((service, rx))
+        Ok((service, rx, renew_subscriptions))
     }
 }
 
@@ -696,7 +705,7 @@ mod tests {
             .pool_max_idle_per_host(0)
             .build::<_, Body>(hub_conn);
 
-        let subscriber = Subscriber::builder()
+        let (subscriber, renew_subscriptions) = Subscriber::builder()
             .renewal_margin(MARGIN)
             .build(
                 sub_listener,
@@ -705,6 +714,7 @@ mod tests {
                 pool,
             )
             .unwrap();
+        tokio::spawn(renew_subscriptions);
 
         (subscriber, hub_client, hub_listener)
     }

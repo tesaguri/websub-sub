@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::marker::Unpin;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -14,11 +13,11 @@ use crate::util;
 
 /// A `Future` that executes the specified function in a scheduled manner.
 #[pin_project]
-pub struct Scheduler<T, F> {
-    handle: Weak<T>,
+pub struct Scheduler<H, T> {
+    handle: Weak<H>,
     #[pin]
     sleep: Option<tokio::time::Sleep>,
-    get_next_tick: F,
+    tick: T,
 }
 
 pub struct Handle {
@@ -26,39 +25,48 @@ pub struct Handle {
     task: AtomicWaker,
 }
 
-impl<T, F> Scheduler<T, F>
+pub trait Tick<T> {
+    type Error;
+
+    fn tick(&mut self, handle: &Arc<T>) -> Result<Option<u64>, Self::Error>;
+}
+
+impl<T, F, E> Tick<T> for F
 where
-    T: AsRef<Handle>,
-    F: FnMut(&Arc<T>) -> Option<u64> + Unpin,
+    F: FnMut(&Arc<T>) -> Result<Option<u64>, E>,
 {
-    pub fn new(handle: &Arc<T>, get_next_tick: F) -> Self {
+    type Error = E;
+
+    fn tick(&mut self, handle: &Arc<T>) -> Result<Option<u64>, E> {
+        self(handle)
+    }
+}
+
+impl<H: AsRef<Handle>, T: Tick<H>> Scheduler<H, T> {
+    pub fn new(handle: &Arc<H>, tick: T) -> Self {
         Scheduler {
             sleep: (**handle)
                 .as_ref()
                 .decode_next_tick()
                 .map(|next_tick| tokio::time::sleep_until(next_tick.into())),
             handle: Arc::downgrade(handle),
-            get_next_tick,
+            tick,
         }
     }
 }
 
-impl<T, F> Future for Scheduler<T, F>
-where
-    T: AsRef<Handle>,
-    F: FnMut(&Arc<T>) -> Option<u64> + Unpin,
-{
-    type Output = ();
+impl<H: AsRef<Handle>, T: Tick<H>> Future for Scheduler<H, T> {
+    type Output = Result<(), T::Error>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        log::trace!("Scheduler::<T, F>::poll");
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        log::trace!("Scheduler::<H, T>::poll");
 
         let mut this = self.project();
 
         let t = if let Some(t) = this.handle.upgrade() {
             t
         } else {
-            return Poll::Ready(());
+            return Poll::Ready(Ok(()));
         };
         let handle = (*t).as_ref();
 
@@ -82,7 +90,7 @@ where
 
         ready!(sleep.as_mut().poll(cx));
 
-        if let Some(next_tick) = (this.get_next_tick)(&t) {
+        if let Some(next_tick) = this.tick.tick(&t)? {
             handle.next_tick.store(next_tick, Ordering::Relaxed);
             let next_tick = util::instant_from_unix(Duration::from_secs(next_tick));
             sleep.reset(next_tick.into());
@@ -128,6 +136,7 @@ impl Drop for Handle {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
     use std::sync::atomic::AtomicU32;
 
     use super::*;
@@ -171,9 +180,9 @@ mod tests {
         tokio::time::pause();
 
         let handle = Arc::new(Handle::new(Some(util::now_unix().as_secs() + 1)));
-        let scheduler = Scheduler::new(&handle, move |handle| {
+        let scheduler = Scheduler::new(&handle, move |handle: &Arc<Handle>| {
             let count = handle.incr_count();
-            Some((util::now_unix() + count * PERIOD).as_secs())
+            Ok::<_, Infallible>(Some((util::now_unix() + count * PERIOD).as_secs()))
         });
         let mut task = tokio_test::task::spawn(scheduler);
 
@@ -225,9 +234,9 @@ mod tests {
         tokio::time::pause();
 
         let handle = Arc::new(Handle::new(None));
-        let scheduler = Scheduler::new(&handle, move |handle| {
+        let scheduler = Scheduler::new(&handle, move |handle: &Arc<Handle>| {
             let count = handle.incr_count();
-            Some((util::now_unix() + count * PERIOD).as_secs())
+            Ok::<_, Infallible>(Some((util::now_unix() + count * PERIOD).as_secs()))
         });
         let mut task = tokio_test::task::spawn(scheduler);
 
