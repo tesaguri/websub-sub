@@ -126,11 +126,22 @@ where
         S::Error: Debug,
     {
         let path = req.uri().path();
-        let id = if let Some(id) = path
-            .strip_prefix(self.callback.path())
-            .and_then(crate::util::callback_id::decode)
-        {
-            id
+        let id = if let Some(tail) = path.strip_prefix(self.callback.path()) {
+            if let Some(id) = crate::util::callback_id::decode(tail) {
+                id
+            } else {
+                let status = if tail.as_bytes().contains(&b'/') || req.uri().query().is_some() {
+                    // Former case is unknown endpoint which might be used in the future or by an
+                    // outer `Service`.
+                    // The latter is invalid intent verification (see below for rationale).
+                    StatusCode::NOT_FOUND
+                } else {
+                    // Return the same status code as the case of a non-existing callback, in case
+                    // an attacker is brute-forcing with no knowledge of our ID format
+                    StatusCode::GONE
+                };
+                return Ok(empty_response(status));
+            }
         } else {
             return Ok(empty_response(StatusCode::NOT_FOUND));
         };
