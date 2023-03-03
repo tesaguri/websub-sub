@@ -104,6 +104,23 @@ impl Signature {
         }
     }
 
+    pub fn is_preferable_to(&self, other: &Self) -> bool {
+        self.discriminant() >= other.discriminant()
+    }
+
+    fn discriminant(&self) -> u8 {
+        match *self {
+            #[cfg(feature = "sha-1")]
+            Signature::Sha1(_) => 0,
+            #[cfg(feature = "sha-2")]
+            Signature::Sha256(_) => 1,
+            #[cfg(feature = "sha-2")]
+            Signature::Sha384(_) => 2,
+            #[cfg(feature = "sha-2")]
+            Signature::Sha512(_) => 3,
+        }
+    }
+
     pub fn verify_with(self, secret: &[u8]) -> Verifier {
         match self {
             #[cfg(feature = "sha-1")]

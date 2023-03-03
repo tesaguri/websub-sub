@@ -154,29 +154,46 @@ where
                 .map_err(Error::Connection);
         }
 
-        let signature_header = if let Some(v) = req.headers().get(HUB_SIGNATURE) {
-            v
+        // Process all `X-Hub-Signature` values.
+        // It's not specified in the WebSub recommendation, but seems to be a natural extension.
+        let mut signature = None;
+        for signature_header in req.headers().get_all(HUB_SIGNATURE) {
+            let sig = match Signature::parse(signature_header.as_bytes()) {
+                Ok(sig) => sig,
+                Err(signature::SerializeError::Parse) => {
+                    log::debug!(
+                        "Callback {}: unrecognized `X-Hub-Signature` syntax: {:?}",
+                        id,
+                        signature_header
+                    );
+                    // Probably something is terribly wrong here, but we'll keep going anyway
+                    // because this might be an unknown extension of some sort.
+                    continue;
+                }
+                Err(signature::SerializeError::UnknownMethod(method)) => {
+                    let method = String::from_utf8_lossy(method);
+                    log::debug!("Callback {}: unknown digest algorithm: {}", id, method);
+                    continue;
+                }
+            };
+
+            if let Some(ref mut prev) = signature {
+                // Take the most "preferable" one.
+                // XXX: Should we store and verify all of them?
+                if sig.is_preferable_to(prev) {
+                    *prev = sig
+                }
+            } else {
+                signature = Some(sig)
+            }
+        }
+
+        let signature = if let Some(signature) = signature {
+            signature
         } else {
             log::debug!("Callback {}: missing signature", id);
             // The WebSub spec doesn't seem to specify appropriate error code in this case
             return Ok(Response::default());
-        };
-
-        let signature = match Signature::parse(signature_header.as_bytes()) {
-            Ok(signature) => signature,
-            Err(signature::SerializeError::Parse) => {
-                log::debug!(
-                    "Callback {}: malformed signature: {:?}",
-                    id,
-                    signature_header
-                );
-                return Ok(empty_response(StatusCode::BAD_REQUEST));
-            }
-            Err(signature::SerializeError::UnknownMethod(method)) => {
-                let method = String::from_utf8_lossy(method);
-                log::debug!("Callback {}: unknown digest algorithm: {}", id, method);
-                return Ok(empty_response(StatusCode::NOT_ACCEPTABLE));
-            }
         };
 
         let (parts, body) = req.into_parts();
