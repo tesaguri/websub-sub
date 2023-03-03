@@ -295,7 +295,7 @@ fn prepare_callback_prefix(prefix: Uri) -> Uri {
     }
 }
 
-#[cfg(all(test, feature = "diesel2"))]
+#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 mod tests {
     use std::convert::Infallible;
     use std::str;

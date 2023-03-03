@@ -32,7 +32,8 @@ pin-project = "1"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_urlencoded = "0.7"
-sha1 = "0.10"
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
 string = { version = "0.3", default-features = false }
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
@@ -44,7 +45,10 @@ tower-service = "0.3"
 diesel = { version = "~2.0", default-features = false, optional = true }
 
 [features]
+default = ["sha-1", "sha-2"]
 diesel2 = ["diesel/i-implement-a-third-party-backend-and-opt-into-breaking-changes", "diesel/r2d2"]
+sha-1 = ["sha1"]
+sha-2 = ["sha2"]
 
 [dev-dependencies]
 anyhow = "1"

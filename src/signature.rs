@@ -1,3 +1,5 @@
+#![cfg_attr(not(any(feature = "sha-1", feature = "sha-2")), allow(unused))]
+
 use std::fmt::{self, Debug, Formatter};
 
 use hmac::digest::block_buffer;
@@ -8,17 +10,34 @@ use hmac::digest::crypto_common::BlockSizeUser;
 use hmac::digest::typenum;
 use hmac::digest::{self, HashMarker, OutputSizeUser};
 use hmac::{Hmac, Mac};
+#[cfg(feature = "sha-1")]
 use sha1::Sha1;
+#[cfg(feature = "sha-2")]
+use sha2::{Sha256, Sha384, Sha512};
 
 /// Serialized `X-Hub-Signature` header value.
 pub enum Signature {
+    #[cfg(feature = "sha-1")]
     Sha1(digest::Output<Sha1>),
+    #[cfg(feature = "sha-2")]
+    Sha256(digest::Output<Sha256>),
+    #[cfg(feature = "sha-2")]
+    Sha384(digest::Output<Sha384>),
+    #[cfg(feature = "sha-2")]
+    Sha512(digest::Output<Sha512>),
 }
 
 /// A pair of `Signature` and its associated `Hmac` instance, used to verify the given signature.
 #[derive(Debug)]
 pub enum Verifier {
+    #[cfg(feature = "sha-1")]
     Sha1(GenericVerifier<Sha1>),
+    #[cfg(feature = "sha-2")]
+    Sha256(GenericVerifier<Sha256>),
+    #[cfg(feature = "sha-2")]
+    Sha384(GenericVerifier<Sha384>),
+    #[cfg(feature = "sha-2")]
+    Sha512(GenericVerifier<Sha512>),
 }
 
 pub struct GenericVerifier<D: CoreProxy>
@@ -73,14 +92,34 @@ impl Signature {
         }
 
         match method {
+            #[cfg(feature = "sha-1")]
             b"sha1" => decode_hex::<Sha1>(hex).map(Signature::Sha1),
+            #[cfg(feature = "sha-2")]
+            b"sha256" => decode_hex::<Sha256>(hex).map(Signature::Sha256),
+            #[cfg(feature = "sha-2")]
+            b"sha384" => decode_hex::<Sha384>(hex).map(Signature::Sha384),
+            #[cfg(feature = "sha-2")]
+            b"sha512" => decode_hex::<Sha512>(hex).map(Signature::Sha512),
             _ => Err(SerializeError::UnknownMethod(method)),
         }
     }
 
     pub fn verify_with(self, secret: &[u8]) -> Verifier {
         match self {
+            #[cfg(feature = "sha-1")]
             Signature::Sha1(signature) => Verifier::Sha1(GenericVerifier::new(signature, secret)),
+            #[cfg(feature = "sha-2")]
+            Signature::Sha256(signature) => {
+                Verifier::Sha256(GenericVerifier::new(signature, secret))
+            }
+            #[cfg(feature = "sha-2")]
+            Signature::Sha384(signature) => {
+                Verifier::Sha384(GenericVerifier::new(signature, secret))
+            }
+            #[cfg(feature = "sha-2")]
+            Signature::Sha512(signature) => {
+                Verifier::Sha512(GenericVerifier::new(signature, secret))
+            }
         }
     }
 }
@@ -88,13 +127,27 @@ impl Signature {
 impl Verifier {
     pub fn update(&mut self, bytes: &[u8]) {
         match *self {
+            #[cfg(feature = "sha-1")]
             Verifier::Sha1(ref mut inner) => inner.mac.update(bytes),
+            #[cfg(feature = "sha-2")]
+            Verifier::Sha256(ref mut inner) => inner.mac.update(bytes),
+            #[cfg(feature = "sha-2")]
+            Verifier::Sha384(ref mut inner) => inner.mac.update(bytes),
+            #[cfg(feature = "sha-2")]
+            Verifier::Sha512(ref mut inner) => inner.mac.update(bytes),
         }
     }
 
     pub fn verify_reset(&mut self) -> std::result::Result<(), SignatureMismatch> {
         match *self {
+            #[cfg(feature = "sha-1")]
             Verifier::Sha1(ref mut inner) => inner.verify_reset(),
+            #[cfg(feature = "sha-2")]
+            Verifier::Sha256(ref mut inner) => inner.verify_reset(),
+            #[cfg(feature = "sha-2")]
+            Verifier::Sha384(ref mut inner) => inner.verify_reset(),
+            #[cfg(feature = "sha-2")]
+            Verifier::Sha512(ref mut inner) => inner.verify_reset(),
         }
     }
 }

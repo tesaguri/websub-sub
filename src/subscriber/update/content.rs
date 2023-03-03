@@ -29,6 +29,10 @@ pub struct Content<B> {
 }
 
 impl<B> Content<B> {
+    #[cfg_attr(
+        not(any(feature = "sha-1", feature = "sha-2")),
+        allow(unreachable_code, unused)
+    )]
     pub(crate) fn new(body: B, signature: Signature, secret: &[u8]) -> Self {
         let verifier = signature.verify_with(secret);
         Content { body, verifier }

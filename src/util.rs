@@ -32,7 +32,7 @@ pub mod consts {
     #[allow(clippy::declare_interior_mutable_const)]
     pub const APPLICATION_WWW_FORM_URLENCODED: HeaderValue =
         HeaderValue::from_static("application/x-www-form-urlencoded");
-    #[cfg(all(test, feature = "diesel2"))]
+    #[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
     #[allow(clippy::declare_interior_mutable_const)]
     pub const APPLICATION_ATOM_XML: HeaderValue = HeaderValue::from_static("application/atom+xml");
     #[allow(clippy::declare_interior_mutable_const)]
@@ -40,12 +40,12 @@ pub mod consts {
 }
 
 pub mod callback_id;
-#[cfg(all(test, feature = "diesel2"))]
+#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 pub mod connection;
 pub mod http_service;
 pub mod time;
 
-#[cfg(all(test, feature = "diesel2"))]
+#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 mod first;
 
 use std::error::Error;
@@ -62,13 +62,13 @@ use cfg_if::cfg_if;
 use serde::{de, Deserialize};
 use tokio::io::ReadBuf;
 
-#[cfg(all(test, feature = "diesel2"))]
+#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 pub use self::connection::connection;
-#[cfg(all(test, feature = "diesel2"))]
+#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 pub use self::first::{first, First};
 pub use self::http_service::HttpService;
 pub use self::time::{instant_from_unix, instant_now, now_unix, system_time_now};
-#[cfg(all(test, feature = "diesel2"))]
+#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 pub use self::time::{FutureTimeoutExt, Sleep};
 
 #[derive(Deserialize)]
