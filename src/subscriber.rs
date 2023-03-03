@@ -28,11 +28,11 @@ pub use self::update::Update;
 
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::future;
+use std::future::{self, Future};
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -44,7 +44,7 @@ use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::db::{Connection, Pool};
-use crate::util::{empty_response, HttpService};
+use crate::util::{empty_response, Backoff, HttpService};
 use crate::Error;
 
 /// A WebSub subscriber server.
@@ -52,6 +52,7 @@ use crate::Error;
 pub struct Subscriber<P, S, B, I> {
     #[pin]
     incoming: I,
+    backoff: Pin<Box<Backoff>>,
     server: Http,
     rx: mpsc::UnboundedReceiver<Update<hyper::Body>>,
     service: Arc<Service<P, S, hyper::Body, B>>,
@@ -102,11 +103,26 @@ where
     }
 
     fn accept_all(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), I::Error>> {
+        const MAX_BACKOFF: u64 = 2 << 6;
+
         let mut this = self.project();
-        while let Poll::Ready(option) = this.incoming.as_mut().try_poll_next(cx)? {
-            match option {
+
+        ready!(this.backoff.as_mut().poll(cx));
+
+        while let Poll::Ready(result) = this.incoming.as_mut().try_poll_next(cx) {
+            match result {
                 None => return Poll::Ready(Ok(())),
-                Some(sock) => {
+                Some(Err(e)) => {
+                    if this.backoff.wait_secs() >= MAX_BACKOFF {
+                        return Poll::Ready(Err(e));
+                    }
+                    // Try to recover from the error
+                    this.backoff.as_mut().increase(cx);
+                    return Poll::Pending;
+                }
+                Some(Ok(sock)) => {
+                    this.backoff.as_mut().reset();
+
                     let service = this.service.clone();
                     let service = tower::service_fn(move |req| match (*service).call(req) {
                         Ok(ret) => future::ready(Ok::<_, Infallible>(ret)),
@@ -117,6 +133,7 @@ where
                             )))
                         }
                     });
+
                     tokio::spawn(this.server.serve_connection(sock, service));
                 }
             }
@@ -210,6 +227,7 @@ impl Builder {
         let (service, rx, renew_subscriptions) = self.build_service(callback, client, pool)?;
         let subscriber = Subscriber {
             incoming,
+            backoff: Box::pin(Backoff::new()),
             server: Http::new(),
             rx,
             service,

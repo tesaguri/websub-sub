@@ -45,7 +45,8 @@ pub mod connection;
 pub mod http_service;
 pub mod time;
 
-#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
+mod backoff;
+#[cfg(test)]
 mod first;
 
 use std::error::Error;
@@ -62,9 +63,10 @@ use cfg_if::cfg_if;
 use serde::{de, Deserialize};
 use tokio::io::ReadBuf;
 
+pub use self::backoff::Backoff;
 #[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
 pub use self::connection::connection;
-#[cfg(all(test, feature = "diesel2", feature = "sha-1"))]
+#[cfg(test)]
 pub use self::first::{first, First};
 pub use self::http_service::HttpService;
 pub use self::time::{instant_from_unix, instant_now, now_unix, system_time_now};
@@ -156,6 +158,7 @@ cfg_if! {
             type Right;
 
             fn unwrap_left(self) -> Self::Left;
+            fn unwrap_right(self) -> Self::Right;
         }
 
         impl<A, B> EitherUnwrapExt for future::Either<A, B> {
@@ -168,6 +171,16 @@ cfg_if! {
                     future::Either::Left(a) => a,
                     future::Either::Right(_) => {
                         panic!("called `Either::unwrap_left()` on a `Right` value");
+                    }
+                }
+            }
+
+            #[track_caller]
+            fn unwrap_right(self) -> B {
+                match self {
+                    future::Either::Right(b) => b,
+                    future::Either::Left(_) => {
+                        panic!("called `Either::unwrap_right()` on a `Left` value");
                     }
                 }
             }
