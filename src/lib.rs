@@ -4,7 +4,7 @@ pub mod db;
 pub mod hub;
 pub mod subscriber;
 
-#[cfg(feature = "diesel2")]
+#[cfg(all(test, feature = "diesel2"))]
 mod schema;
 mod signature;
 mod util;
