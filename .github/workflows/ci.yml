@@ -1,0 +1,59 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt -- --check
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEBUG_DEBUG: 0
+      RUSTDOCFLAGS: --deny warnings
+      RUSTFLAGS: --warn rust-2018-idioms --deny warnings
+      RUST_BACKTRACE: 1
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+          - beta
+          - nightly
+        features:
+          -
+          - sha-1,sha-2
+          - diesel2
+    steps:
+      - uses: actions/checkout@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v1
+      - name: Rustdoc
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --verbose --no-default-features '--features=${{ matrix.features }}' --no-deps
+      - name: Clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --verbose --all --tests --no-default-features '--features=${{ matrix.features }}'
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --verbose --tests --no-default-features '--features=${{ matrix.features }}'
+      - name: Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --verbose --no-default-features '--features=${{ matrix.features }}'
