@@ -13,10 +13,10 @@ use crate::db::{Connection, Pool};
 use crate::hub;
 use crate::signature::{self, Signature};
 use crate::util::{consts::HUB_SIGNATURE, empty_response, now_unix, HttpService};
-use crate::Error;
 
 use super::scheduler;
 use super::update::{self, Update};
+use super::Error;
 
 pub struct Service<P, S, SB, CB> {
     pub(super) callback: Uri,

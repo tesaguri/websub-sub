@@ -2,7 +2,7 @@ macro_rules! try_pool {
     ($result:expr $(,)?) => {
         match $result {
             Ok(x) => x,
-            Err(e) => return Err($crate::Error::Pool(e)),
+            Err(e) => return Err($crate::subscriber::Error::Pool(e)),
         }
     };
 }
@@ -11,7 +11,7 @@ macro_rules! try_conn {
     ($result:expr $(,)?) => {
         match $result {
             Ok(x) => x,
-            Err(e) => return Err($crate::Error::Connection(e)),
+            Err(e) => return Err($crate::subscriber::Error::Connection(e)),
         }
     };
 }
@@ -45,7 +45,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::db::{Connection, Pool};
 use crate::util::{empty_response, Backoff, HttpService};
-use crate::Error;
 
 /// A WebSub subscriber server.
 #[pin_project]
@@ -61,6 +60,14 @@ pub struct Subscriber<P, S, B, I> {
 #[derive(Clone, Debug)]
 pub struct Builder {
     renewal_margin: Duration,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error<PE, CE> {
+    #[error("failed establish a database connection")]
+    Pool(#[source] PE),
+    #[error("database connection failed")]
+    Connection(#[source] CE),
 }
 
 impl Subscriber<(), (), (), ()> {

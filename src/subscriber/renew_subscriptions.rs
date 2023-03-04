@@ -13,6 +13,7 @@ use crate::subscriber;
 use crate::util::HttpService;
 
 use super::scheduler::{self, Scheduler};
+use super::Error;
 
 /// A future that renews WebSub subscriptions of the associated [`subscriber::Service`] as the
 /// expiration time of any of them comes close.
@@ -56,8 +57,7 @@ where
     SB: 'static,
     CB: Default + From<Vec<u8>> + Send + 'static,
 {
-    type Output =
-        Result<(), crate::Error<P::Error, <P::Connection as crate::db::Connection>::Error>>;
+    type Output = Result<(), Error<P::Error, <P::Connection as crate::db::Connection>::Error>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.project().scheduler.poll(cx)
@@ -75,7 +75,7 @@ where
     SB: 'static,
     CB: Default + From<Vec<u8>> + Send + 'static,
 {
-    type Error = crate::Error<P::Error, <P::Connection as crate::db::Connection>::Error>;
+    type Error = Error<P::Error, <P::Connection as crate::db::Connection>::Error>;
 
     fn tick(
         &mut self,
