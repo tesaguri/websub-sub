@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::channel::mpsc;
-use futures::{Future, FutureExt};
+use futures::FutureExt;
 use http::{Request, Response, StatusCode, Uri};
 use http_body::{Body, Full};
 
@@ -44,7 +44,7 @@ where
         hub: String,
         topic: String,
         conn: &mut C,
-    ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
+    ) -> Result<hub::ResponseFuture<'static, S::Error>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error>,
     {
@@ -53,7 +53,7 @@ where
 
     pub fn renew_subscriptions<C>(&self, conn: &mut C) -> Result<(), C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error> + 'static,
+        C: Connection<Error = <P::Connection as Connection>::Error>,
     {
         let now_unix = now_unix();
         let threshold: i64 = (now_unix.as_secs() + self.renewal_margin + 1)
@@ -100,7 +100,7 @@ where
         hub: String,
         topic: String,
         conn: &mut C,
-    ) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
+    ) -> Result<hub::ResponseFuture<'static, S::Error>, C::Error>
     where
         C: Connection<Error = <P::Connection as Connection>::Error>,
     {
@@ -232,7 +232,7 @@ where
         conn: &mut C,
     ) -> Result<Response<Full<Bytes>>, C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error> + 'static,
+        C: Connection<Error = <P::Connection as Connection>::Error>,
     {
         match serde_urlencoded::from_str::<hub::Verify<String>>(query) {
             Ok(hub::Verify::Subscribe {

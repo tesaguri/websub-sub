@@ -1,7 +1,12 @@
+use std::fmt::{self, Debug, Formatter};
+use std::future::Future;
+use std::pin::Pin;
 use std::str;
+use std::task::{Context, Poll};
 
 use base64::Engine;
-use futures::{Future, TryFutureExt};
+use futures::future::BoxFuture;
+use futures::TryFutureExt;
 use http::header::{CONTENT_TYPE, LOCATION};
 use http::uri::{Parts, PathAndQuery, Uri};
 use rand::RngCore;
@@ -56,20 +61,41 @@ pub enum Verify<S = String> {
     },
 }
 
+pub struct ResponseFuture<'a, E> {
+    // TODO: Use TAIT once it's stable
+    // <https://github.com/rust-lang/rust/issues/63063>
+    inner: BoxFuture<'a, Result<(), E>>,
+}
+
 const SECRET_LEN: usize = 32;
 type Secret = string::String<[u8; SECRET_LEN]>;
 
-pub fn subscribe<C, S, B>(
+impl<E> Future for ResponseFuture<'_, E> {
+    type Output = Result<(), E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.as_mut().poll(cx)
+    }
+}
+
+impl<E> Debug for ResponseFuture<'_, E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResponseFuture").finish()
+    }
+}
+
+pub fn subscribe<'a, 's: 'a, 'b: 'a, C, S, B>(
     callback: &Uri,
     hub: String,
     topic: String,
     client: S,
     conn: &mut C,
-) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
+) -> Result<ResponseFuture<'a, S::Error>, C::Error>
 where
     C: Connection,
-    S: HttpService<B>,
-    B: From<Vec<u8>>,
+    S: HttpService<B> + Send + 's,
+    S::Future: Send,
+    B: From<Vec<u8>> + Send + 'b,
 {
     let (id, secret) = match create_subscription(&hub, &topic, conn) {
         Ok((id, secret)) => (id, secret),
@@ -88,18 +114,19 @@ where
     Ok(send_request(hub, topic, body, client))
 }
 
-pub fn unsubscribe<C, S, B>(
+pub fn unsubscribe<'a, 's: 'a, 'b: 'a, C, S, B>(
     callback: &Uri,
     id: u64,
     hub: String,
     topic: String,
     client: S,
     conn: &mut C,
-) -> Result<impl Future<Output = Result<(), S::Error>>, C::Error>
+) -> Result<ResponseFuture<'a, S::Error>, C::Error>
 where
     C: Connection,
-    S: HttpService<B>,
-    B: From<Vec<u8>>,
+    S: HttpService<B> + Send + 's,
+    S::Future: Send,
+    B: From<Vec<u8>> + Send + 'b,
 {
     log::info!("Unsubscribing from topic {} at hub {} ({})", topic, hub, id);
 
@@ -115,22 +142,23 @@ where
     Ok(send_request(hub, topic, body, client))
 }
 
-fn send_request<S, B>(
+fn send_request<'a, 's: 'a, 'b: 'a, S, B>(
     hub: String,
     topic: String,
     body: String,
     client: S,
-) -> impl Future<Output = Result<(), S::Error>>
+) -> ResponseFuture<'a, S::Error>
 where
-    S: HttpService<B>,
-    B: From<Vec<u8>>,
+    S: HttpService<B> + Send + 's,
+    S::Future: Send,
+    B: From<Vec<u8>> + Send + 'b,
 {
     let req = http::Request::post(&hub)
         .header(CONTENT_TYPE, APPLICATION_WWW_FORM_URLENCODED)
         .body(B::from(body.into_bytes()))
         .unwrap();
 
-    client.into_service().oneshot(req).map_ok(move |res| {
+    let inner = Box::pin(client.into_service().oneshot(req).map_ok(move |res| {
         let status = res.status();
 
         if status.is_success() {
@@ -151,7 +179,8 @@ where
             hub,
             status
         );
-    })
+    }));
+    ResponseFuture { inner }
 }
 
 fn create_subscription<C>(hub: &str, topic: &str, conn: &mut C) -> Result<(u64, Secret), C::Error>
