@@ -2,7 +2,7 @@ use diesel::prelude::*;
 use futures::future;
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use hyper::Uri;
-use websub_sub::db::Connection as _;
+use websub_sub::db::ConnectionRef;
 use websub_sub::hub;
 
 use crate::schema::*;
@@ -20,7 +20,7 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
     let mut conn = Connection::new(crate::common::open_database()?);
 
     let tasks: FuturesUnordered<_> = if let Some(hub) = opt.hub {
-        conn.transaction(|conn| {
+        (&mut conn).transaction(|conn| {
             let ids = subscriptions::table
                 .filter(subscriptions::hub.eq(&hub))
                 .filter(subscriptions::topic.eq(&opt.topic))
@@ -34,14 +34,14 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
                         hub.clone(),
                         opt.topic.clone(),
                         client.clone(),
-                        conn,
+                        conn.reborrow(),
                     )
                     .map(tokio::spawn)
                 })
                 .collect()
         })?
     } else {
-        conn.transaction(|conn| {
+        (&mut conn).transaction(|conn| {
             let subscriptions = subscriptions::table
                 .filter(subscriptions::topic.eq(&opt.topic))
                 .select((subscriptions::id, subscriptions::hub))
@@ -55,7 +55,7 @@ pub async fn main(opt: Opt) -> anyhow::Result<()> {
                         hub,
                         opt.topic.clone(),
                         client.clone(),
-                        conn,
+                        conn.reborrow(),
                     )
                     .map(tokio::spawn)
                 })

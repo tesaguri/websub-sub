@@ -3,24 +3,26 @@ use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem;
 
-use diesel::associations::HasTable;
-use diesel::backend::sql_dialect::exists_syntax::AnsiSqlExistsSyntax;
-use diesel::backend::sql_dialect::from_clause_syntax::AnsiSqlFromClauseSyntax;
-use diesel::backend::sql_dialect::select_statement_syntax::AnsiSqlSelectStatement;
-use diesel::backend::{Backend, DieselReserveSpecialization, SqlDialect};
-use diesel::connection::{DefaultLoadingMode, LoadConnection};
-use diesel::deserialize::FromSql;
-use diesel::dsl::*;
-use diesel::expression::{is_aggregate, AsExpression, ValidGrouping};
-use diesel::prelude::*;
-use diesel::query_builder::{
+use diesel2::associations::HasTable;
+use diesel2::backend::sql_dialect::exists_syntax::AnsiSqlExistsSyntax;
+use diesel2::backend::sql_dialect::from_clause_syntax::AnsiSqlFromClauseSyntax;
+use diesel2::backend::sql_dialect::select_statement_syntax::AnsiSqlSelectStatement;
+use diesel2::backend::{Backend, DieselReserveSpecialization, SqlDialect};
+use diesel2::connection::{DefaultLoadingMode, LoadConnection};
+use diesel2::deserialize::FromSql;
+use diesel2::dsl::*;
+use diesel2::expression::{is_aggregate, AsExpression, ValidGrouping};
+use diesel2::prelude::*;
+use diesel2::query_builder::{
     AsQuery, DefaultValues, FromClause, LimitOffsetClause, NoLimitClause, NoOffsetClause,
     QueryFragment, QueryId, SelectStatement,
 };
-use diesel::r2d2::{self, ManageConnection, PooledConnection};
-use diesel::serialize::ToSql;
-use diesel::sql_types::{self, HasSqlType};
+use diesel2::r2d2::{self, ManageConnection, PooledConnection};
+use diesel2::serialize::ToSql;
+use diesel2::sql_types::{self, HasSqlType};
 use rand::RngCore;
+
+use super::ConnectionRef;
 
 #[repr(transparent)]
 pub struct Connection<C, Id, Hub, Topic, Secret, ExpiresAt> {
@@ -35,13 +37,13 @@ pub struct Pool<M: r2d2::ManageConnection, Id, Hub, Topic, Secret, ExpiresAt> {
     marker: PhantomData<fn() -> (Id, Hub, Topic, Secret, ExpiresAt)>,
 }
 
-/// Type alias used to refer to the private `diesel::expression::bound::Bound` type.
+/// Type alias used to refer to the private `diesel2::expression::bound::Bound` type.
 type Bound<ST, T> = <T as AsExpression<ST>>::Expression;
 
 impl<C, DB, Table, Id, Hub, Topic, Secret, ExpiresAt>
     Connection<C, Id, Hub, Topic, Secret, ExpiresAt>
 where
-    C: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
+    C: diesel2::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
     DB: Backend
         + SqlDialect<
             EmptyFromClauseSyntax = AnsiSqlFromClauseSyntax,
@@ -58,10 +60,10 @@ where
     i64: FromSql<sql_types::BigInt, DB> + ToSql<sql_types::BigInt, DB>,
     for<'a> &'a str: ToSql<sql_types::Text, DB>,
     String: FromSql<sql_types::Text, DB>,
-    Table: diesel::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
+    Table: diesel2::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
         + HasTable<Table = Table>
         + AsQuery<Query = SelectStatement<FromClause<Table>>>
-        + QuerySource<DefaultSelection = <Table as diesel::Table>::AllColumns>
+        + QuerySource<DefaultSelection = <Table as diesel2::Table>::AllColumns>
         + QueryId
         + Default
         + 'static,
@@ -120,7 +122,7 @@ impl<C, Id, Hub, Topic, Secret, ExpiresAt> Connection<C, Id, Hub, Topic, Secret,
 impl<C, DB, Table, Id, Hub, Topic, Secret, ExpiresAt> super::Connection
     for Connection<C, Id, Hub, Topic, Secret, ExpiresAt>
 where
-    C: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
+    C: diesel2::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
     DB: Backend
         + SqlDialect<
             EmptyFromClauseSyntax = AnsiSqlFromClauseSyntax,
@@ -137,10 +139,10 @@ where
     i64: FromSql<sql_types::BigInt, DB> + ToSql<sql_types::BigInt, DB>,
     for<'a> &'a str: ToSql<sql_types::Text, DB>,
     String: FromSql<sql_types::Text, DB>,
-    Table: diesel::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
+    Table: diesel2::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
         + HasTable<Table = Table>
         + AsQuery<Query = SelectStatement<FromClause<Table>>>
-        + QuerySource<DefaultSelection = <Table as diesel::Table>::AllColumns>
+        + QuerySource<DefaultSelection = <Table as diesel2::Table>::AllColumns>
         + QueryId
         + Default
         + 'static,
@@ -182,14 +184,96 @@ where
         + ValidGrouping<(), IsAggregate = is_aggregate::No>
         + Default,
 {
-    type Error = diesel::result::Error;
+    type Ref<'a> = &'a mut Self
+    where
+        Self: 'a;
+    type Error = diesel2::result::Error;
+
+    fn as_conn_ref(&mut self) -> Self::Ref<'_> {
+        self
+    }
+}
+
+impl<C, DB, Table, Id, Hub, Topic, Secret, ExpiresAt> ConnectionRef
+    for &mut Connection<C, Id, Hub, Topic, Secret, ExpiresAt>
+where
+    C: diesel2::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
+    DB: Backend
+        + SqlDialect<
+            EmptyFromClauseSyntax = AnsiSqlFromClauseSyntax,
+            SelectStatementSyntax = AnsiSqlSelectStatement,
+            ExistsSyntax = AnsiSqlExistsSyntax,
+        > + DieselReserveSpecialization
+        + HasSqlType<sql_types::BigInt>
+        + HasSqlType<sql_types::Bool>
+        + HasSqlType<sql_types::Text>
+        + 'static,
+    DefaultValues: QueryFragment<DB>,
+    LimitOffsetClause<NoLimitClause, NoOffsetClause>: QueryFragment<DB>,
+    bool: FromSql<sql_types::Bool, DB>,
+    i64: FromSql<sql_types::BigInt, DB> + ToSql<sql_types::BigInt, DB>,
+    for<'a> &'a str: ToSql<sql_types::Text, DB>,
+    String: FromSql<sql_types::Text, DB>,
+    Table: diesel2::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
+        + HasTable<Table = Table>
+        + AsQuery<Query = SelectStatement<FromClause<Table>>>
+        + QuerySource<DefaultSelection = <Table as diesel2::Table>::AllColumns>
+        + QueryId
+        + Default
+        + 'static,
+    Table::FromClause: QueryFragment<DB>,
+    Id: Column<Table = Table>
+        + Expression<SqlType = sql_types::BigInt>
+        + SelectableExpression<Table>
+        + QueryFragment<DB>
+        + QueryId
+        + ValidGrouping<(), IsAggregate = is_aggregate::No>
+        + EqAll<i64, Output = Eq<Id, Bound<sql_types::BigInt, i64>>>
+        + Default,
+    Hub: Column<Table = Table>
+        + Expression<SqlType = sql_types::Text>
+        + SelectableExpression<Table>
+        + QueryFragment<DB>
+        + QueryId
+        + ValidGrouping<(), IsAggregate = is_aggregate::No>
+        + Default,
+    Topic: Column<Table = Table>
+        + Expression<SqlType = sql_types::Text>
+        + SelectableExpression<Table>
+        + QueryFragment<DB>
+        + QueryId
+        + ValidGrouping<(), IsAggregate = is_aggregate::No>
+        + Default,
+    Secret: Column<Table = Table>
+        + Expression<SqlType = sql_types::Text>
+        + SelectableExpression<Table>
+        + QueryFragment<DB>
+        + QueryId
+        + ValidGrouping<(), IsAggregate = is_aggregate::No>
+        + Default,
+    ExpiresAt: Column<Table = Table>
+        + Expression<SqlType = sql_types::Nullable<sql_types::BigInt>>
+        + SelectableExpression<Table>
+        + QueryFragment<DB>
+        + QueryId
+        + ValidGrouping<(), IsAggregate = is_aggregate::No>
+        + Default,
+{
+    type Reborrowed<'a> = &'a mut Connection<C, Id, Hub, Topic, Secret, ExpiresAt>
+    where
+        Self: 'a;
+    type Error = diesel2::result::Error;
+
+    fn reborrow(&mut self) -> Self::Reborrowed<'_> {
+        self
+    }
 
     fn transaction<T, F>(&mut self, f: F) -> Result<T, Self::Error>
     where
         F: FnOnce(&mut Self) -> Result<T, Self::Error>,
     {
         self.inner.transaction(|inner| {
-            let this = unsafe {
+            let mut this = unsafe {
                 // SAFETY:
                 // The `#[repr(transparent)]` attribute on `Connection` declaration
                 // guarantees that `Connection<..>` has the same layout as `C`, ensuring
@@ -198,7 +282,7 @@ where
                     inner,
                 )
             };
-            f(this)
+            f(&mut this)
         })
     }
 
@@ -206,7 +290,7 @@ where
         let mut rng = rand::thread_rng();
         self.transaction(|this| loop {
             let id = rng.next_u64();
-            let result = diesel::insert_into(Table::default())
+            let result = diesel2::insert_into(Table::default())
                 .values((
                     Id::default().eq(id as i64),
                     Hub::default().eq(hub),
@@ -216,8 +300,8 @@ where
                 .execute(&mut this.inner);
             match result {
                 Ok(_) => return Ok(id),
-                Err(diesel::result::Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                Err(diesel2::result::Error::DatabaseError(
+                    diesel2::result::DatabaseErrorKind::UniqueViolation,
                     _,
                 )) => {} // retry
                 Err(e) => return Err(e),
@@ -234,7 +318,7 @@ where
     }
 
     fn subscription_exists(&mut self, id: u64, topic: &str) -> QueryResult<bool> {
-        diesel::select(exists(
+        diesel2::select(exists(
             Table::default()
                 .find(id as i64)
                 .filter(Topic::default().eq(topic)),
@@ -280,21 +364,21 @@ where
     }
 
     fn activate_subscription(&mut self, id: u64, expires_at: i64) -> QueryResult<bool> {
-        diesel::update(Table::default().find(id as i64))
+        diesel2::update(Table::default().find(id as i64))
             .set(ExpiresAt::default().eq(expires_at))
             .execute(&mut self.inner)
             .map(|n| n != 0)
     }
 
     fn deactivate_subscriptions_expire_before(&mut self, before: i64) -> QueryResult<()> {
-        diesel::update(Table::default().filter(ExpiresAt::default().le(before)))
+        diesel2::update(Table::default().filter(ExpiresAt::default().le(before)))
             .set(ExpiresAt::default().eq(None::<i64>))
             .execute(&mut self.inner)
             .map(|_| ())
     }
 
     fn delete_subscriptions(&mut self, id: u64) -> QueryResult<bool> {
-        diesel::delete(Table::default().find(id as i64))
+        diesel2::delete(Table::default().find(id as i64))
             .execute(&mut self.inner)
             .map(|n| n != 0)
     }
@@ -305,7 +389,7 @@ where
             .select(ExpiresAt::default().assume_not_null())
             .order(ExpiresAt::default().asc())
             // XXX: Not using `first()`, which involves a `LIMIT` clause that introduces
-            // a private type `diesel::expression::Bound` to the trait bound puzzle
+            // a private type `diesel2::expression::Bound` to the trait bound puzzle
             // (`LimitOffsetClause<LimitClause<Bound<BigInt, i64>>, NoOffsetClause>: QueryFragment<DB>`).
             // The `self::Bound` type alias won't work somehow.
             .load_iter(&mut self.inner)?
@@ -352,7 +436,7 @@ impl<C: Debug, Id, Hub, Topic, Secret, ExpiresAt> Debug
 impl<M: ManageConnection, DB, Table, Id, Hub, Topic, Secret, ExpiresAt>
     Pool<M, Id, Hub, Topic, Secret, ExpiresAt>
 where
-    PooledConnection<M>: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
+    PooledConnection<M>: diesel2::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
     DB: Backend
         + SqlDialect<
             EmptyFromClauseSyntax = AnsiSqlFromClauseSyntax,
@@ -369,10 +453,10 @@ where
     i64: FromSql<sql_types::BigInt, DB> + ToSql<sql_types::BigInt, DB>,
     for<'a> &'a str: ToSql<sql_types::Text, DB>,
     String: FromSql<sql_types::Text, DB>,
-    Table: diesel::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
+    Table: diesel2::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
         + HasTable<Table = Table>
         + AsQuery<Query = SelectStatement<FromClause<Table>>>
-        + QuerySource<DefaultSelection = <Table as diesel::Table>::AllColumns>
+        + QuerySource<DefaultSelection = <Table as diesel2::Table>::AllColumns>
         + QueryId
         + Default
         + 'static,
@@ -443,7 +527,7 @@ impl<M: ManageConnection, Id, Hub, Topic, Secret, ExpiresAt> AsRef<r2d2::Pool<M>
 impl<M: ManageConnection, DB, Table, Id, Hub, Topic, Secret, ExpiresAt> From<r2d2::Pool<M>>
     for Pool<M, Id, Hub, Topic, Secret, ExpiresAt>
 where
-    PooledConnection<M>: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
+    PooledConnection<M>: diesel2::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
     DB: Backend
         + SqlDialect<
             EmptyFromClauseSyntax = AnsiSqlFromClauseSyntax,
@@ -460,10 +544,10 @@ where
     i64: FromSql<sql_types::BigInt, DB> + ToSql<sql_types::BigInt, DB>,
     for<'a> &'a str: ToSql<sql_types::Text, DB>,
     String: FromSql<sql_types::Text, DB>,
-    Table: diesel::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
+    Table: diesel2::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
         + HasTable<Table = Table>
         + AsQuery<Query = SelectStatement<FromClause<Table>>>
-        + QuerySource<DefaultSelection = <Table as diesel::Table>::AllColumns>
+        + QuerySource<DefaultSelection = <Table as diesel2::Table>::AllColumns>
         + QueryId
         + Default
         + 'static,
@@ -551,7 +635,7 @@ where
 impl<M: ManageConnection, DB, Table, Id, Hub, Topic, Secret, ExpiresAt> super::Pool
     for Pool<M, Id, Hub, Topic, Secret, ExpiresAt>
 where
-    PooledConnection<M>: diesel::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
+    PooledConnection<M>: diesel2::Connection<Backend = DB> + LoadConnection<DefaultLoadingMode>,
     DB: Backend
         + SqlDialect<
             EmptyFromClauseSyntax = AnsiSqlFromClauseSyntax,
@@ -568,10 +652,10 @@ where
     i64: FromSql<sql_types::BigInt, DB> + ToSql<sql_types::BigInt, DB>,
     for<'a> &'a str: ToSql<sql_types::Text, DB>,
     String: FromSql<sql_types::Text, DB>,
-    Table: diesel::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
+    Table: diesel2::Table<PrimaryKey = Id, AllColumns = (Id, Hub, Topic, Secret, ExpiresAt)>
         + HasTable<Table = Table>
         + AsQuery<Query = SelectStatement<FromClause<Table>>>
-        + QuerySource<DefaultSelection = <Table as diesel::Table>::AllColumns>
+        + QuerySource<DefaultSelection = <Table as diesel2::Table>::AllColumns>
         + QueryId
         + Default
         + 'static,

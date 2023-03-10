@@ -13,7 +13,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 
-use crate::db::Connection;
+use crate::db::ConnectionRef;
 use crate::util;
 use crate::util::consts::APPLICATION_WWW_FORM_URLENCODED;
 use crate::util::HttpService;
@@ -89,10 +89,10 @@ pub fn subscribe<'a, 's: 'a, 'b: 'a, C, S, B>(
     hub: String,
     topic: String,
     client: S,
-    conn: &mut C,
+    conn: C,
 ) -> Result<ResponseFuture<'a, S::Error>, C::Error>
 where
-    C: Connection,
+    C: ConnectionRef,
     S: HttpService<B> + Send + 's,
     S::Future: Send,
     B: From<Vec<u8>> + Send + 'b,
@@ -120,10 +120,10 @@ pub fn unsubscribe<'a, 's: 'a, 'b: 'a, C, S, B>(
     hub: String,
     topic: String,
     client: S,
-    conn: &mut C,
+    mut conn: C,
 ) -> Result<ResponseFuture<'a, S::Error>, C::Error>
 where
-    C: Connection,
+    C: ConnectionRef,
     S: HttpService<B> + Send + 's,
     S::Future: Send,
     B: From<Vec<u8>> + Send + 'b,
@@ -183,9 +183,9 @@ where
     ResponseFuture { inner }
 }
 
-fn create_subscription<C>(hub: &str, topic: &str, conn: &mut C) -> Result<(u64, Secret), C::Error>
+fn create_subscription<C>(hub: &str, topic: &str, mut conn: C) -> Result<(u64, Secret), C::Error>
 where
-    C: Connection,
+    C: ConnectionRef,
 {
     let mut rng = rand::thread_rng();
 

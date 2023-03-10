@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 
 use pin_project::pin_project;
 
-use crate::db::{Connection, Pool};
+use crate::db::{Connection, ConnectionRef, Pool};
 // Import `super` as `subscriber` to make the intra doc links (and their `title` attributes) look
 // nicer without hassles.
 use crate::subscriber;
@@ -82,8 +82,9 @@ where
         service: &Arc<subscriber::Service<P, S, SB, CB>>,
     ) -> Result<Option<u64>, Self::Error> {
         let mut conn = try_pool!(service.pool.get());
-        try_conn!(service.renew_subscriptions(&mut conn));
-        Ok(try_conn!(conn.get_next_expiry()).map(|expires_at| {
+        try_conn!(service.renew_subscriptions(conn.as_conn_ref()));
+        let expiry = try_conn!(conn.as_conn_ref().get_next_expiry());
+        Ok(expiry.map(|expires_at| {
             expires_at
                 .try_into()
                 .map_or(0, |expires_at| service.refresh_time(expires_at))

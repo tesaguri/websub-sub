@@ -9,7 +9,7 @@ use futures::FutureExt;
 use http::{Request, Response, StatusCode, Uri};
 use http_body::{Body, Full};
 
-use crate::db::{Connection, Pool};
+use crate::db::{Connection, ConnectionRef, Pool};
 use crate::hub;
 use crate::signature::{self, Signature};
 use crate::util::{consts::HUB_SIGNATURE, empty_response, now_unix, HttpService};
@@ -43,17 +43,17 @@ where
         &self,
         hub: String,
         topic: String,
-        conn: &mut C,
+        conn: C,
     ) -> Result<hub::ResponseFuture<'static, S::Error>, C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error>,
+        C: ConnectionRef<Error = <P::Connection as Connection>::Error>,
     {
         hub::subscribe(&self.callback, hub, topic, self.client.clone(), conn)
     }
 
-    pub fn renew_subscriptions<C>(&self, conn: &mut C) -> Result<(), C::Error>
+    pub fn renew_subscriptions<C>(&self, mut conn: C) -> Result<(), C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error>,
+        C: ConnectionRef<Error = <P::Connection as Connection>::Error>,
     {
         let now_unix = now_unix();
         let threshold: i64 = (now_unix.as_secs() + self.renewal_margin + 1)
@@ -76,7 +76,10 @@ where
                     hub,
                     id
                 );
-                tokio::spawn(self.subscribe(hub, topic, conn)?.map(log_and_discard_error));
+                let task = self
+                    .subscribe(hub, topic, conn.reborrow())?
+                    .map(log_and_discard_error);
+                tokio::spawn(task);
             }
 
             conn.deactivate_subscriptions_expire_before(threshold)?;
@@ -99,10 +102,10 @@ where
         id: u64,
         hub: String,
         topic: String,
-        conn: &mut C,
+        conn: C,
     ) -> Result<hub::ResponseFuture<'static, S::Error>, C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error>,
+        C: ConnectionRef<Error = <P::Connection as Connection>::Error>,
     {
         hub::unsubscribe(&self.callback, id, hub, topic, self.client.clone(), conn)
     }
@@ -147,10 +150,11 @@ where
         };
 
         let mut conn = try_pool!(self.pool.get());
+        let mut conn = conn.as_conn_ref();
 
         if let Some(q) = req.uri().query() {
             return self
-                .verify_intent(id, q, &mut conn)
+                .verify_intent(id, q, conn.reborrow())
                 .map_err(Error::Connection);
         }
 
@@ -229,10 +233,10 @@ where
         &self,
         id: u64,
         query: &str,
-        conn: &mut C,
+        mut conn: C,
     ) -> Result<Response<Full<Bytes>>, C::Error>
     where
-        C: Connection<Error = <P::Connection as Connection>::Error>,
+        C: ConnectionRef<Error = <P::Connection as Connection>::Error>,
     {
         match serde_urlencoded::from_str::<hub::Verify<String>>(query) {
             Ok(hub::Verify::Subscribe {
@@ -257,7 +261,7 @@ where
                         for id in conn.get_old_subscriptions(id, &hub, &topic)? {
                             log::info!("Removing the old subscription");
                             let task = self
-                                .unsubscribe(id, hub.clone(), topic.clone(), conn)?
+                                .unsubscribe(id, hub.clone(), topic.clone(), conn.reborrow())?
                                 .map(log_and_discard_error);
                             tokio::spawn(task);
                         }

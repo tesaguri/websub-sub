@@ -41,17 +41,21 @@ tokio-test = "0.4"
 tower = { version = "0.4", default-features = false, features = ["util"] }
 tower-service = "0.3"
 
+# `diesel1` feature
+diesel1 = { package = "diesel", version = "1.4.3", default-features = false, optional = true }
+
 # `diesel2` feature
-diesel = { version = "~2.0", default-features = false, optional = true }
+diesel2 = { package = "diesel", version = "~2.0", default-features = false, optional = true }
 
 [features]
 default = ["sha-1", "sha-2"]
-diesel2 = ["diesel/i-implement-a-third-party-backend-and-opt-into-breaking-changes", "diesel/r2d2"]
+diesel1 = ["diesel1/r2d2"]
+diesel2 = ["diesel2/i-implement-a-third-party-backend-and-opt-into-breaking-changes", "diesel2/r2d2"]
 sha-1 = ["sha1"]
 sha-2 = ["sha2"]
 
 [dev-dependencies]
 anyhow = "1"
-diesel = { version = "~2.0", default-features = false, features = ["sqlite"] }
+diesel2 = { package = "diesel", version = "~2.0", default-features = false, features = ["sqlite"] }
 diesel_migrations = { version = "~2.0", default-features = false, features = ["sqlite"] }
 hyper = { version = "0.14", features = ["client", "tcp"] }

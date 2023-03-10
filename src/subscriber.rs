@@ -43,7 +43,7 @@ use hyper::server::conn::Http;
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::db::{Connection, Pool};
+use crate::db::{Connection, ConnectionRef, Pool};
 use crate::util::{empty_response, Backoff, HttpService};
 
 /// A WebSub subscriber server.
@@ -270,11 +270,13 @@ impl Builder {
     {
         let renewal_margin = self.renewal_margin.as_secs();
 
-        let first_tick = try_conn!(try_pool!(pool.get()).get_next_expiry()).map(|expires_at| {
-            u64::try_from(expires_at)
-                .unwrap_or(0)
-                .saturating_sub(renewal_margin)
-        });
+        let first_tick = {
+            try_conn!(try_pool!(pool.get()).as_conn_ref().get_next_expiry()).map(|expires_at| {
+                u64::try_from(expires_at)
+                    .unwrap_or(0)
+                    .saturating_sub(renewal_margin)
+            })
+        };
 
         let callback = prepare_callback_prefix(callback);
 
@@ -327,10 +329,10 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use diesel::dsl::*;
-    use diesel::prelude::*;
-    use diesel::r2d2::ConnectionManager;
-    use diesel::SqliteConnection;
+    use diesel2::dsl::*;
+    use diesel2::prelude::*;
+    use diesel2::r2d2::ConnectionManager;
+    use diesel2::SqliteConnection;
     use diesel_migrations::{FileBasedMigrations, MigrationHarness};
     use futures::channel::oneshot;
     use futures::future;
@@ -398,7 +400,7 @@ mod tests {
 
         let begin = i64::try_from(util::now_unix().as_secs()).unwrap();
 
-        let pool = diesel::r2d2::Pool::builder()
+        let pool = diesel2::r2d2::Pool::builder()
             .max_size(1)
             .build(ConnectionManager::<SqliteConnection>::new(":memory:"))
             .unwrap();
@@ -707,7 +709,7 @@ mod tests {
     }
 
     fn prepare_subscriber() -> (Subscriber<Pool, Client, Body, Listener>, Client, Listener) {
-        let pool = diesel::r2d2::Pool::builder()
+        let pool = diesel2::r2d2::Pool::builder()
             .max_size(1)
             .build(ConnectionManager::new(":memory:"))
             .unwrap();
