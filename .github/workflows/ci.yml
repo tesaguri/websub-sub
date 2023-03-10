@@ -29,9 +29,8 @@ jobs:
           - nightly
         features:
           -
-          - sha-1,sha-2
+          - diesel2,sha-1,sha-2
           - diesel1
-          - diesel2
     steps:
       - uses: actions/checkout@v2
       - uses: dtolnay/rust-toolchain@stable
